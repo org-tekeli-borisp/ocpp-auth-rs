@@ -8,7 +8,7 @@ fn apply(request: Request<()>) -> Response<()> {
 }
 
 fn produce_status(request: Request<()>) -> StatusCode {
-    return if request.headers().is_empty() {
+    return if request.headers().is_empty() || request.headers().get("Authorization").is_none() {
         StatusCode::UNAUTHORIZED
     } else {
         StatusCode::OK
