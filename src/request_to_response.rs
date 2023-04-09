@@ -1,12 +1,19 @@
 use http::{Request, Response, StatusCode};
 
 fn apply(request: Request<()>) -> Response<()> {
-    if request.headers().is_empty() {
-        return Response::builder().status(StatusCode::UNAUTHORIZED).body(()).unwrap();
-    }
-    return Response::builder().body(()).unwrap();
+    return Response::builder()
+        .status(produce_status(request))
+        .body(())
+        .unwrap();
 }
 
+fn produce_status(request: Request<()>) -> StatusCode {
+    return if request.headers().is_empty() {
+        StatusCode::UNAUTHORIZED
+    } else {
+        StatusCode::OK
+    };
+}
 
 #[cfg(test)]
 mod tests {
