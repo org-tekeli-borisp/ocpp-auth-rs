@@ -1,11 +1,11 @@
-use crate::authorize::authorization_failed_for;
 use http::{Request, StatusCode};
 
+use crate::authorize::authorization_failed_for;
+
 pub fn derive_status_from(request: Request<()>) -> StatusCode {
-    return if authorization_failed_for(request) {
-        StatusCode::UNAUTHORIZED
-    } else {
-        StatusCode::OK
+    return match authorization_failed_for(request) {
+        true => StatusCode::UNAUTHORIZED,
+        false => StatusCode::OK,
     };
 }
 
