@@ -1,19 +1,11 @@
+use crate::status::derive_status;
 use http::{Request, Response, StatusCode};
-use crate::authorize::authorization_failed;
 
 fn apply(request: Request<()>) -> Response<()> {
     return Response::builder()
-        .status(produce_status(request))
+        .status(derive_status(request))
         .body(())
         .unwrap();
-}
-
-fn produce_status(request: Request<()>) -> StatusCode {
-    return if authorization_failed(request) {
-        StatusCode::UNAUTHORIZED
-    } else {
-        StatusCode::OK
-    };
 }
 
 #[cfg(test)]
@@ -55,5 +47,17 @@ mod tests {
         let response = apply(given_request);
 
         assert_eq!(StatusCode::UNAUTHORIZED, response.status());
+    }
+
+    #[test]
+    fn should_produce_http_response_with_http_status_200_otherwise() {
+        let given_request: Request<()> = Request::builder()
+            .header("Authorization", "HEADER")
+            .body(())
+            .unwrap();
+
+        let response = apply(given_request);
+
+        assert_eq!(StatusCode::OK, response.status());
     }
 }
