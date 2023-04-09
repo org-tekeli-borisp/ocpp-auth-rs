@@ -1,4 +1,5 @@
 use http::{Request, Response, StatusCode};
+use crate::authorize::authorization_failed;
 
 fn apply(request: Request<()>) -> Response<()> {
     return Response::builder()
@@ -13,10 +14,6 @@ fn produce_status(request: Request<()>) -> StatusCode {
     } else {
         StatusCode::OK
     };
-}
-
-fn authorization_failed(request: Request<()>) -> bool {
-    request.headers().is_empty() || request.headers().get("Authorization").is_none()
 }
 
 #[cfg(test)]
