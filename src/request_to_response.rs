@@ -1,4 +1,4 @@
-use http::{Request, Response};
+use http::{Request, Response, StatusCode};
 
 fn apply(_request: Request<()>) -> Response<()> {
     return Response::builder().body(()).unwrap();
@@ -28,5 +28,7 @@ mod tests {
         let given_request: Request<()> = Request::builder().body(()).unwrap();
 
         let response = apply(given_request);
+
+        assert_eq!(StatusCode::UNAUTHORIZED, response.status());
     }
 }
