@@ -41,4 +41,9 @@ mod tests {
 
         assert_eq!(StatusCode::UNAUTHORIZED, response.status());
     }
+
+    #[test]
+    fn should_produce_http_response_with_http_status_401_in_case_http_request_authorization_header_is_missing() {
+
+    }
 }
