@@ -47,5 +47,7 @@ mod tests {
         let given_request: Request<()> = Request::builder().header("OTHER", "HEADER").body(()).unwrap();
 
         let response = apply(given_request);
+
+        assert_eq!(StatusCode::UNAUTHORIZED, response.status());
     }
 }
