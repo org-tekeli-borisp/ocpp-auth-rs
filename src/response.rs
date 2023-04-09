@@ -1,10 +1,10 @@
 use http::{Request, Response};
 
-use crate::status::derive_status;
+use crate::status::derive_status_from;
 
 pub fn produce_response_for(request: Request<()>) -> Response<()> {
     return Response::builder()
-        .status(derive_status(request))
+        .status(derive_status_from(request))
         .body(())
         .unwrap();
 }

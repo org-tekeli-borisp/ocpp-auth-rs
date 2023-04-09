@@ -7,12 +7,13 @@ mod response;
 mod status;
 
 fn main() {
+    println!("{:#?}", produce_response_for(given_request()));
+}
+
+fn given_request() -> Request<()> {
     let given_request: Request<()> = Request::builder()
         .header("Authorization", "HEADER")
         .body(())
         .unwrap();
-
-    let response = produce_response_for(given_request);
-
-    println!("{:#?}", response);
+    given_request
 }
