@@ -25,6 +25,6 @@ mod tests {
 
     #[test]
     fn should_produce_http_response_with_http_status_401_in_case_http_request_headers_are_empty() {
-
+        let _given_request: Request<()> = Request::builder().body(()).unwrap();
     }
 }
