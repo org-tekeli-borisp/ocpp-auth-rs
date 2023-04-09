@@ -1,7 +1,7 @@
 use crate::status::derive_status;
 use http::{Request, Response, StatusCode};
 
-fn apply(request: Request<()>) -> Response<()> {
+fn produce(request: Request<()>) -> Response<()> {
     return Response::builder()
         .status(derive_status(request))
         .body(())
@@ -22,7 +22,7 @@ mod tests {
     fn should_consume_http_request_and_produce_http_response() {
         let given_request: Request<()> = Request::builder().body(()).unwrap();
 
-        let response = apply(given_request);
+        let response = produce(given_request);
 
         assert_eq!("http::response::Response<()>", type_of(&response));
     }
@@ -31,7 +31,7 @@ mod tests {
     fn should_produce_http_response_with_http_status_401_in_case_http_request_headers_are_empty() {
         let given_request: Request<()> = Request::builder().body(()).unwrap();
 
-        let response = apply(given_request);
+        let response = produce(given_request);
 
         assert_eq!(StatusCode::UNAUTHORIZED, response.status());
     }
@@ -44,7 +44,7 @@ mod tests {
             .body(())
             .unwrap();
 
-        let response = apply(given_request);
+        let response = produce(given_request);
 
         assert_eq!(StatusCode::UNAUTHORIZED, response.status());
     }
@@ -56,7 +56,7 @@ mod tests {
             .body(())
             .unwrap();
 
-        let response = apply(given_request);
+        let response = produce(given_request);
 
         assert_eq!(StatusCode::OK, response.status());
     }

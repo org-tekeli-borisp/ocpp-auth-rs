@@ -1,5 +1,5 @@
 mod authorize;
-mod request_to_response;
+mod response;
 mod status;
 
 fn main() {
