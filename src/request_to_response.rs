@@ -1,6 +1,9 @@
 use http::{Request, Response, StatusCode};
 
-fn apply(_request: Request<()>) -> Response<()> {
+fn apply(request: Request<()>) -> Response<()> {
+    if request.headers().is_empty() {
+        return Response::builder().status(StatusCode::UNAUTHORIZED).body(()).unwrap();
+    }
     return Response::builder().body(()).unwrap();
 }
 
