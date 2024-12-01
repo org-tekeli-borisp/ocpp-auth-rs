@@ -5,7 +5,7 @@ use crate::response::produce_response_for;
 mod authorize;
 mod response;
 mod status;
-mod specs;
+pub mod specs;
 
 fn main() {
     println!("{:#?}", produce_response_for(given_request()));
