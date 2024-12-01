@@ -3,21 +3,16 @@ use http::{Request, StatusCode};
 use crate::authorize::authorization_failed_for;
 
 pub fn derive_status_from(request: Request<()>) -> StatusCode {
-    return match authorization_failed_for(request) {
+    match authorization_failed_for(request) {
         true => StatusCode::UNAUTHORIZED,
         false => StatusCode::OK,
-    };
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::any::type_name;
-
     use super::*;
-
-    fn type_of<T>(_: &T) -> &str {
-        return type_name::<T>();
-    }
+    use crate::specs::utils::type_of;
 
     #[test]
     fn should_consume_http_request_and_produce_status_code() {

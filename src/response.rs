@@ -3,23 +3,17 @@ use http::{Request, Response};
 use crate::status::derive_status_from;
 
 pub fn produce_response_for(request: Request<()>) -> Response<()> {
-    return Response::builder()
+    Response::builder()
         .status(derive_status_from(request))
         .body(())
-        .unwrap();
+        .unwrap()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::any::type_name;
-
     use http::StatusCode;
-
     use super::*;
-
-    fn type_of<T>(_: &T) -> &str {
-        return type_name::<T>();
-    }
+    use crate::specs::utils::type_of;
 
     #[test]
     fn should_consume_http_request_and_produce_http_response() {

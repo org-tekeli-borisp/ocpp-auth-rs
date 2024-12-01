@@ -6,13 +6,8 @@ pub fn authorization_failed_for(request: Request<()>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::any::type_name;
-
     use super::*;
-
-    fn type_of<T>(_: &T) -> &str {
-        return type_name::<T>();
-    }
+    use crate::specs::utils::type_of;
 
     #[test]
     fn should_consume_http_request_and_produce_bool() {
