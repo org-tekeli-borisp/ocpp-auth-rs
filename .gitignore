@@ -1,3 +1,4 @@
 /target
+/e2e/bcrypt-hash/target
 /.idea/
 /ocpp-auth-rs.iml

@@ -1,0 +1,20 @@
+http:
+  routers:
+    ocpp:
+      rule: PathPrefix(`/ocpp`)
+      entryPoints:
+        - web
+      service: mock-backend
+      middlewares:
+        - forward-auth
+
+  services:
+    mock-backend:
+      loadBalancer:
+        servers:
+          - url: http://mock-backend:9000
+
+  middlewares:
+    forward-auth:
+      forwardAuth:
+        address: http://ocpp-auth-rs:8080/auth

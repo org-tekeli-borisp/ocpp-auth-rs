@@ -1,0 +1,54 @@
+services:
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: ocpp-e2e-kafka
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,BROKER://0.0.0.0:9093,CONTROLLER://0.0.0.0:9094
+      CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,BROKER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,BROKER://kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: BROKER
+      KAFKA_BROKER_ID: "1"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 15s
+      retries: 60
+      start_period: 30s
+
+  ocpp-auth-rs:
+    image: ocpp-auth-rs:e2e
+    container_name: ocpp-e2e-ocpp-auth-rs
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      OCPP_AUTH_TOPIC: ocpp-auth-stations
+      PORT: "8080"
+    ports:
+      - "127.0.0.1:18080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  mock-backend:
+    image: ocpp-auth-rs:e2e
+    container_name: ocpp-e2e-mock-backend
+    entrypoint: ["mock_backend"]
+
+  traefik:
+    image: traefik:v3.6
+    container_name: ocpp-e2e-traefik
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    ports:
+      - "127.0.0.1:80:80"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+    depends_on:
+      - ocpp-auth-rs
+      - mock-backend
