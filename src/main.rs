@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use ocpp_auth_rs::credentials::CredentialStore;
 use ocpp_auth_rs::kafka_consumer;
-use ocpp_auth_rs::server::app;
+use ocpp_auth_rs::metrics::Metrics;
+use ocpp_auth_rs::server::{AppState, app};
 
 #[tokio::main]
 async fn main() {
@@ -19,6 +20,10 @@ async fn main() {
 
     let store = Arc::new(CredentialStore::new());
     kafka_consumer::start(store.clone(), &brokers, &topic);
+    let state = Arc::new(AppState {
+        store,
+        metrics: Arc::new(Metrics::new()),
+    });
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -31,7 +36,7 @@ async fn main() {
 
     tracing::info!("ocpp-auth-rs listening on http://{addr}");
 
-    axum::serve(listener, app(store)).await.expect("serve");
+    axum::serve(listener, app(state)).await.expect("serve");
 }
 
 fn require_env(name: &str) -> String {

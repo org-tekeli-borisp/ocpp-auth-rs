@@ -32,6 +32,14 @@ impl CredentialStore {
         self.stations.lock().unwrap().contains_key(station_id)
     }
 
+    pub fn len(&self) -> usize {
+        self.stations.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.stations.lock().unwrap().is_empty()
+    }
+
     pub fn verify(&self, station_id: &str, username: &str, password: &[u8]) -> bool {
         if username != station_id {
             return false;
