@@ -8,7 +8,14 @@ axum = "0.8"
 base64 = "0.23.1"
 bcrypt = "0.19.3"
 http = "1"
+rdkafka = "0.39.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+testcontainers = { version = "0.27", features = ["blocking"] }
+testcontainers-modules = { version = "0.15", features = ["kafka"] }
 tower = { version = "0.5", features = ["util"] }

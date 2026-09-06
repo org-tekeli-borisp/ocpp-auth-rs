@@ -1,16 +1,25 @@
-mod basic_auth;
-mod credentials;
-mod server;
-mod station_id;
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use credentials::CredentialStore;
-use server::app;
+use ocpp_auth_rs::credentials::CredentialStore;
+use ocpp_auth_rs::kafka_consumer;
+use ocpp_auth_rs::server::app;
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let brokers = require_env("KAFKA_BROKERS");
+    let topic = require_env("OCPP_AUTH_TOPIC");
+
+    let store = Arc::new(CredentialStore::new());
+    kafka_consumer::start(store.clone(), &brokers, &topic);
+
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -20,9 +29,14 @@ async fn main() {
         .await
         .expect("bind listener");
 
-    println!("ocpp-auth-rs listening on http://{addr}");
+    tracing::info!("ocpp-auth-rs listening on http://{addr}");
 
-    axum::serve(listener, app(Arc::new(CredentialStore::new())))
-        .await
-        .expect("serve");
+    axum::serve(listener, app(store)).await.expect("serve");
+}
+
+fn require_env(name: &str) -> String {
+    match std::env::var(name) {
+        Ok(value) if !value.is_empty() => value,
+        _ => panic!("{name} environment variable is required"),
+    }
 }

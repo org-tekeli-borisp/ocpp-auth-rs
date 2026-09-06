@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-#[allow(dead_code)]
 pub enum AuthType {
     NoAuth,
     Forbidden,
@@ -18,7 +17,6 @@ impl CredentialStore {
         Self::default()
     }
 
-    #[allow(dead_code)]
     pub fn upsert(&self, station_id: &str, auth: AuthType) {
         self.stations
             .lock()
@@ -26,9 +24,12 @@ impl CredentialStore {
             .insert(station_id.to_owned(), auth);
     }
 
-    #[allow(dead_code)]
     pub fn remove(&self, station_id: &str) {
         self.stations.lock().unwrap().remove(station_id);
+    }
+
+    pub fn contains(&self, station_id: &str) -> bool {
+        self.stations.lock().unwrap().contains_key(station_id)
     }
 
     pub fn verify(&self, station_id: &str, username: &str, password: &[u8]) -> bool {
