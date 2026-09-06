@@ -1,28 +1,24 @@
-use http::Request;
-
-use crate::response::produce_response_for;
-
 mod authorize;
-mod response;
-mod status;
+mod server;
 pub mod specs;
+mod status;
 
-fn main() {
-    println!("{:#?}", produce_response_for(given_valid_request()));
-    println!("{:#?}", produce_response_for(given_invalid_request()));
-}
+use std::net::SocketAddr;
 
-fn given_valid_request() -> Request<()> {
-    let given_request: Request<()> = Request::builder()
-        .header("Authorization", "HEADER")
-        .body(())
-        .unwrap();
-    given_request
-}
+use server::app;
 
-fn given_invalid_request() -> Request<()> {
-    let given_request: Request<()> = Request::builder()
-        .body(())
-        .unwrap();
-    given_request
+#[tokio::main]
+async fn main() {
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("bind listener");
+
+    println!("ocpp-auth-rs listening on http://{addr}");
+
+    axum::serve(listener, app()).await.expect("serve");
 }

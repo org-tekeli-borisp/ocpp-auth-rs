@@ -24,7 +24,7 @@ mod tests {
 
         let result = authorization_failed_for(given_request);
 
-        assert_eq!(true, result);
+        assert!(result);
     }
 
     #[test]
@@ -36,7 +36,7 @@ mod tests {
 
         let result = authorization_failed_for(given_request);
 
-        assert_eq!(true, result);
+        assert!(result);
     }
 
     #[test]
@@ -48,6 +48,6 @@ mod tests {
 
         let result = authorization_failed_for(given_request);
 
-        assert_eq!(false, result);
+        assert!(!result);
     }
 }
