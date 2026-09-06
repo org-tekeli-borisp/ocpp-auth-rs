@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8"
+base64 = "0.23.1"
 http = "1"
+sha2 = "0.11.0"
+subtle = "2.6.1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 
 [dev-dependencies]
