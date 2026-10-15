@@ -54,6 +54,10 @@ auth_is_up() {
   curl -sf -o /dev/null "${AUTH_URL}/healthz"
 }
 
+auth_is_ready() {
+  curl -sf -o /dev/null "${AUTH_URL}/readyz"
+}
+
 traefik_is_up() {
   [ "$(curl -s -o /dev/null -w '%{http_code}' "${TRAEIFIK_URL}/" || true)" != "000" ]
 }
@@ -103,6 +107,9 @@ docker exec ocpp-e2e-kafka /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --create --topic "$TOPIC" --partitions 1 --replication-factor 1 \
   --config cleanup.policy=compact
+
+echo "==> Waiting for ocpp-auth-rs /readyz (initial topic read complete)"
+wait_for 120 "ocpp-auth-rs /readyz to return 200" auth_is_ready
 
 echo "==> Computing bcrypt hash (cost 10) of the test password"
 cargo build --release --manifest-path e2e/bcrypt-hash/Cargo.toml

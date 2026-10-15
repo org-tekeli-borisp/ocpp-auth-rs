@@ -20,11 +20,14 @@ async fn main() {
     let topic = require_env("OCPP_AUTH_TOPIC");
 
     let store = Arc::new(CredentialStore::new());
+    let ready = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
-    let consumer = kafka_consumer::start(store.clone(), &brokers, &topic, stop.clone());
+    let consumer =
+        kafka_consumer::start(store.clone(), &brokers, &topic, ready.clone(), stop.clone());
     let state = Arc::new(AppState {
         store,
         metrics: Arc::new(Metrics::new()),
+        ready,
     });
 
     let port: u16 = std::env::var("PORT")

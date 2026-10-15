@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -50,12 +51,13 @@ pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[
 }
 
 /// Starts a consumer thread that keeps `store` in sync with the compacted
-/// topic. `stop` requests the thread to finish its current poll cycle and
-/// return.
+/// topic. `ready` is set once the initial read of the topic has been applied,
+/// `stop` requests the thread to finish its current poll cycle and return.
 pub fn start(
     store: Arc<CredentialStore>,
     brokers: &str,
     topic: &str,
+    ready: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     let brokers = brokers.to_owned();
@@ -71,9 +73,11 @@ pub fn start(
         consumer
             .subscribe(&[topic.as_str()])
             .expect("subscribe to topic");
+        let mut last_offsets: HashMap<i32, i64> = HashMap::new();
         while !stop.load(Ordering::Relaxed) {
             match consumer.poll(Duration::from_millis(100)) {
                 Some(Ok(message)) => {
+                    last_offsets.insert(message.partition(), message.offset());
                     let Some(key) = message.key() else {
                         warn!("skipping message without key");
                         continue;
@@ -85,11 +89,44 @@ pub fn start(
                     apply_message(&store, station_id, message.payload());
                 }
                 Some(Err(e)) => error!(error = %e, "kafka poll failed"),
-                None => continue,
+                None => {
+                    if !ready.load(Ordering::Relaxed) && caught_up(&consumer, &topic, &last_offsets)
+                    {
+                        ready.store(true, Ordering::Relaxed);
+                        tracing::info!(topic = topic.as_str(), "initial topic read complete");
+                    }
+                }
             }
         }
         tracing::info!("kafka consumer stopped");
     })
+}
+
+/// True once every assigned partition of `topic` has been consumed up to its
+/// high watermark, i.e. the compacted topic state is fully present in the
+/// store. An empty assignment or an empty topic is not considered ready.
+fn caught_up(consumer: &BaseConsumer, topic: &str, last_offsets: &HashMap<i32, i64>) -> bool {
+    let Ok(assignment) = consumer.assignment() else {
+        return false;
+    };
+    let partitions: Vec<i32> = assignment
+        .elements()
+        .iter()
+        .filter(|element| element.topic() == topic)
+        .map(|element| element.partition())
+        .collect();
+    !partitions.is_empty()
+        && partitions.into_iter().all(|partition| {
+            let Ok((_low, high)) =
+                consumer.fetch_watermarks(topic, partition, Duration::from_secs(1))
+            else {
+                return false;
+            };
+            match last_offsets.get(&partition) {
+                Some(&offset) => offset >= high - 1,
+                None => high <= 0,
+            }
+        })
 }
 
 #[cfg(test)]

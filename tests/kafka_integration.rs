@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use ocpp_auth_rs::credentials::CredentialStore;
@@ -60,9 +60,15 @@ fn store_should_be_populated_from_compacted_topic_and_track_live_updates() {
     produce(&broker, "A", None);
 
     let store = Arc::new(CredentialStore::new());
+    let ready = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
-    kafka_consumer::start(store.clone(), &broker, TOPIC, stop.clone());
+    kafka_consumer::start(store.clone(), &broker, TOPIC, ready.clone(), stop.clone());
 
+    wait_until(
+        Duration::from_secs(30),
+        "consumer to finish the initial topic read",
+        || ready.load(Ordering::Relaxed),
+    );
     wait_until(
         Duration::from_secs(30),
         "A to be removed by its tombstone while B and C are present",

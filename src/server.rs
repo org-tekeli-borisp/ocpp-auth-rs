@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -13,11 +14,13 @@ use crate::metrics::Metrics;
 pub struct AppState {
     pub store: Arc<CredentialStore>,
     pub metrics: Arc<Metrics>,
+    pub ready: Arc<AtomicBool>,
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
         .fallback(get(auth))
         .with_state(state)
@@ -25,6 +28,14 @@ pub fn app(state: Arc<AppState>) -> Router {
 
 async fn healthz() -> StatusCode {
     StatusCode::OK
+}
+
+async fn readyz(State(state): State<Arc<AppState>>) -> StatusCode {
+    if state.ready.load(Ordering::Relaxed) {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 async fn metrics(State(state): State<Arc<AppState>>) -> Response {
@@ -95,9 +106,14 @@ mod tests {
     }
 
     fn given_state() -> Arc<AppState> {
+        given_state_with(true)
+    }
+
+    fn given_state_with(ready: bool) -> Arc<AppState> {
         Arc::new(AppState {
             store: given_store(),
             metrics: Arc::new(Metrics::new()),
+            ready: Arc::new(AtomicBool::new(ready)),
         })
     }
 
@@ -154,6 +170,21 @@ mod tests {
     #[tokio::test]
     async fn healthz_should_return_ok() {
         let response = get_response("/healthz", None, None).await;
+
+        assert_ok(&response);
+    }
+
+    #[tokio::test]
+    async fn readyz_should_return_service_unavailable_until_ready() {
+        let state = given_state_with(false);
+        let response = get_response_with(state, "/readyz", None, None).await;
+
+        assert_eq!(StatusCode::SERVICE_UNAVAILABLE, response.status());
+    }
+
+    #[tokio::test]
+    async fn readyz_should_return_ok_when_ready() {
+        let response = get_response("/readyz", None, None).await;
 
         assert_ok(&response);
     }
