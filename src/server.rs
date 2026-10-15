@@ -6,15 +6,21 @@ use axum::extract::{Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use http::StatusCode;
-use http::header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
+use http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
+use tokio::sync::Semaphore;
 
 use crate::credentials::CredentialStore;
 use crate::metrics::Metrics;
+use crate::rate_limit::RateLimiter;
 
 pub struct AppState {
     pub store: Arc<CredentialStore>,
     pub metrics: Arc<Metrics>,
     pub ready: Arc<AtomicBool>,
+    pub rate_limiter: Arc<RateLimiter>,
+    /// Bounds concurrent bcrypt verifications so a credential-stuffing flood
+    /// cannot saturate the host with hashing work.
+    pub bcrypt_permits: Arc<Semaphore>,
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
@@ -48,7 +54,6 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn auth(State(state): State<Arc<AppState>>, request: Request) -> Response {
-    let state = &*state;
     let path = request
         .headers()
         .get("X-Forwarded-Uri")
@@ -56,33 +61,51 @@ async fn auth(State(state): State<Arc<AppState>>, request: Request) -> Response 
         .map(|value| value.split('?').next().unwrap_or_default())
         .unwrap_or_else(|| request.uri().path());
     let Some(station_id) = crate::station_id::station_id_from_path(path) else {
-        return unauthorized(state);
+        return unauthorized(&state);
     };
+    if !state.rate_limiter.allow(&station_id) {
+        return rate_limited(&state);
+    }
     let Some(authorization) = request
         .headers()
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
     else {
-        return unauthorized(state);
+        return unauthorized(&state);
     };
     let Some((username, password)) = crate::basic_auth::parse(authorization) else {
-        return unauthorized(state);
+        return unauthorized(&state);
     };
-    if state.store.verify(&station_id, &username, &password) {
+    let Ok(permit) = state.bcrypt_permits.clone().acquire_owned().await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let store = state.store.clone();
+    let verified = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        store.verify(&station_id, &username, &password)
+    })
+    .await
+    .unwrap_or(false);
+    if verified {
         state.metrics.record(true);
         StatusCode::OK.into_response()
     } else {
-        unauthorized(state)
+        unauthorized(&state)
     }
 }
 
-fn unauthorized(state: &AppState) -> Response {
+fn unauthorized(state: &Arc<AppState>) -> Response {
     state.metrics.record(false);
     (
         StatusCode::UNAUTHORIZED,
         [(WWW_AUTHENTICATE, "Basic realm=\"ocpp\"")],
     )
         .into_response()
+}
+
+fn rate_limited(state: &Arc<AppState>) -> Response {
+    state.metrics.record_rate_limited();
+    (StatusCode::TOO_MANY_REQUESTS, [(RETRY_AFTER, "1")]).into_response()
 }
 
 #[cfg(test)]
@@ -106,14 +129,17 @@ mod tests {
     }
 
     fn given_state() -> Arc<AppState> {
-        given_state_with(true)
+        given_state_with(true, 1000.0)
     }
 
-    fn given_state_with(ready: bool) -> Arc<AppState> {
+    /// Rate limiter without refill so burst behaviour is deterministic in tests.
+    fn given_state_with(ready: bool, auth_burst: f64) -> Arc<AppState> {
         Arc::new(AppState {
             store: given_store(),
             metrics: Arc::new(Metrics::new()),
             ready: Arc::new(AtomicBool::new(ready)),
+            rate_limiter: Arc::new(RateLimiter::new(0.0, auth_burst)),
+            bcrypt_permits: Arc::new(Semaphore::new(8)),
         })
     }
 
@@ -176,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn readyz_should_return_service_unavailable_until_ready() {
-        let state = given_state_with(false);
+        let state = given_state_with(false, 1000.0);
         let response = get_response_with(state, "/readyz", None, None).await;
 
         assert_eq!(StatusCode::SERVICE_UNAVAILABLE, response.status());
@@ -187,6 +213,41 @@ mod tests {
         let response = get_response("/readyz", None, None).await;
 
         assert_ok(&response);
+    }
+
+    #[tokio::test]
+    async fn auth_should_return_rate_limited_when_burst_is_exceeded() {
+        let state = given_state_with(true, 2.0);
+
+        assert_ok(
+            &get_response_with(
+                state.clone(),
+                "/ocpp/AL1000",
+                Some(VALID_AUTHORIZATION),
+                None,
+            )
+            .await,
+        );
+        assert_ok(
+            &get_response_with(
+                state.clone(),
+                "/ocpp/AL1000",
+                Some(VALID_AUTHORIZATION),
+                None,
+            )
+            .await,
+        );
+        let response =
+            get_response_with(state, "/ocpp/AL1000", Some(VALID_AUTHORIZATION), None).await;
+
+        assert_eq!(StatusCode::TOO_MANY_REQUESTS, response.status());
+        assert_eq!(
+            Some("1"),
+            response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+        );
     }
 
     #[tokio::test]
@@ -276,6 +337,29 @@ mod tests {
         let body = body_of(response).await;
         assert!(body.contains("ocpp_auth_requests_total{result=\"success\"} 1"));
         assert!(body.contains("ocpp_auth_requests_total{result=\"failure\"} 1"));
+    }
+
+    #[tokio::test]
+    async fn metrics_should_count_rate_limited_requests() {
+        let state = given_state_with(true, 1.0);
+        get_response_with(
+            state.clone(),
+            "/ocpp/AL1000",
+            Some(VALID_AUTHORIZATION),
+            None,
+        )
+        .await;
+        get_response_with(
+            state.clone(),
+            "/ocpp/AL1000",
+            Some(VALID_AUTHORIZATION),
+            None,
+        )
+        .await;
+        let response = get_response_with(state, "/metrics", None, None).await;
+
+        let body = body_of(response).await;
+        assert!(body.contains("ocpp_auth_requests_total{result=\"rate_limited\"} 1"));
     }
 
     #[tokio::test]

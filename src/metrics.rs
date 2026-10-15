@@ -35,6 +35,7 @@ impl Default for Metrics {
         };
         let _ = metrics.requests_total.with_label_values(&["success"]);
         let _ = metrics.requests_total.with_label_values(&["failure"]);
+        let _ = metrics.requests_total.with_label_values(&["rate_limited"]);
         metrics
     }
 }
@@ -47,6 +48,12 @@ impl Metrics {
     pub fn record(&self, success: bool) {
         let result = if success { "success" } else { "failure" };
         self.requests_total.with_label_values(&[result]).inc();
+    }
+
+    pub fn record_rate_limited(&self) {
+        self.requests_total
+            .with_label_values(&["rate_limited"])
+            .inc();
     }
 
     pub fn render(&self, known_stations: usize) -> String {
