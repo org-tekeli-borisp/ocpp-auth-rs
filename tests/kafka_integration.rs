@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use ocpp_auth_rs::credentials::CredentialStore;
@@ -59,7 +60,8 @@ fn store_should_be_populated_from_compacted_topic_and_track_live_updates() {
     produce(&broker, "A", None);
 
     let store = Arc::new(CredentialStore::new());
-    kafka_consumer::start(store.clone(), &broker, TOPIC);
+    let stop = Arc::new(AtomicBool::new(false));
+    kafka_consumer::start(store.clone(), &broker, TOPIC, stop.clone());
 
     wait_until(
         Duration::from_secs(30),

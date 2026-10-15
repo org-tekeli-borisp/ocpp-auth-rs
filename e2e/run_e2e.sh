@@ -138,6 +138,11 @@ fi
 UNKNOWN_CODE="$(http_code -u "ZZZZ:whatever" "${TRAEIFIK_URL}/ocpp/ZZZZ")"
 check "unknown station returns 401" "401" "$UNKNOWN_CODE"
 
+echo "==> Verifying graceful shutdown on SIGTERM"
+docker stop -t 15 ocpp-e2e-ocpp-auth-rs >/dev/null || fail "docker stop failed"
+AUTH_EXIT_CODE="$(docker inspect --format '{{.State.ExitCode}}' ocpp-e2e-ocpp-auth-rs 2>/dev/null)"
+check "ocpp-auth-rs exits cleanly on SIGTERM" "0" "$AUTH_EXIT_CODE"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "E2E RESULT: PASS (all assertions succeeded)"

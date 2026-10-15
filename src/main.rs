@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ocpp_auth_rs::credentials::CredentialStore;
 use ocpp_auth_rs::kafka_consumer;
@@ -19,7 +20,8 @@ async fn main() {
     let topic = require_env("OCPP_AUTH_TOPIC");
 
     let store = Arc::new(CredentialStore::new());
-    kafka_consumer::start(store.clone(), &brokers, &topic);
+    let stop = Arc::new(AtomicBool::new(false));
+    let consumer = kafka_consumer::start(store.clone(), &brokers, &topic, stop.clone());
     let state = Arc::new(AppState {
         store,
         metrics: Arc::new(Metrics::new()),
@@ -36,7 +38,39 @@ async fn main() {
 
     tracing::info!("ocpp-auth-rs listening on http://{addr}");
 
-    axum::serve(listener, app(state)).await.expect("serve");
+    axum::serve(listener, app(state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("serve");
+
+    stop.store(true, Ordering::Relaxed);
+    if consumer.join().is_err() {
+        tracing::warn!("kafka consumer thread panicked during shutdown");
+    }
+    tracing::info!("ocpp-auth-rs shut down");
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("install Ctrl-C signal handler");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM signal handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("received Ctrl-C"),
+        _ = terminate => tracing::info!("received SIGTERM"),
+    }
+    tracing::info!("shutting down, draining in-flight requests");
 }
 
 fn require_env(name: &str) -> String {

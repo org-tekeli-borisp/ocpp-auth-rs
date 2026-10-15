@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rdkafka::Message;
@@ -47,7 +49,15 @@ pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[
     store.upsert(station_id, auth);
 }
 
-pub fn start(store: Arc<CredentialStore>, brokers: &str, topic: &str) {
+/// Starts a consumer thread that keeps `store` in sync with the compacted
+/// topic. `stop` requests the thread to finish its current poll cycle and
+/// return.
+pub fn start(
+    store: Arc<CredentialStore>,
+    brokers: &str,
+    topic: &str,
+    stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
     let brokers = brokers.to_owned();
     let topic = topic.to_owned();
     std::thread::spawn(move || {
@@ -61,7 +71,7 @@ pub fn start(store: Arc<CredentialStore>, brokers: &str, topic: &str) {
         consumer
             .subscribe(&[topic.as_str()])
             .expect("subscribe to topic");
-        loop {
+        while !stop.load(Ordering::Relaxed) {
             match consumer.poll(Duration::from_millis(100)) {
                 Some(Ok(message)) => {
                     let Some(key) = message.key() else {
@@ -78,7 +88,8 @@ pub fn start(store: Arc<CredentialStore>, brokers: &str, topic: &str) {
                 None => continue,
             }
         }
-    });
+        tracing::info!("kafka consumer stopped");
+    })
 }
 
 #[cfg(test)]
