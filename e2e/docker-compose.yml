@@ -28,8 +28,10 @@ services:
       KAFKA_BROKERS: kafka:9092
       OCPP_AUTH_TOPIC: ocpp-auth-stations
       PORT: "8080"
+      ADMIN_PORT: "8081"
     ports:
       - "127.0.0.1:18080:8080"
+      - "127.0.0.1:18081:8081"
     depends_on:
       kafka:
         condition: service_healthy

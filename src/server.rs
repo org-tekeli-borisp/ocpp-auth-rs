@@ -23,12 +23,18 @@ pub struct AppState {
     pub bcrypt_permits: Arc<Semaphore>,
 }
 
+/// Public router: every request on the auth port is a forward-auth check.
 pub fn app(state: Arc<AppState>) -> Router {
+    Router::new().fallback(get(auth)).with_state(state)
+}
+
+/// Internal router: operational endpoints, served on a separate admin port so
+/// they stay unreachable even when the auth port is exposed directly.
+pub fn admin_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
-        .fallback(get(auth))
         .with_state(state)
 }
 
@@ -169,6 +175,16 @@ mod tests {
         get_response_with(given_state(), path, authorization, forwarded_uri).await
     }
 
+    async fn get_admin_response_with(state: Arc<AppState>, path: &str) -> Response {
+        let request = Request::builder().uri(path).body(Body::empty()).unwrap();
+
+        admin_app(state).oneshot(request).await.unwrap()
+    }
+
+    async fn get_admin_response(path: &str) -> Response {
+        get_admin_response_with(given_state(), path).await
+    }
+
     async fn body_of(response: Response) -> String {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -195,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn healthz_should_return_ok() {
-        let response = get_response("/healthz", None, None).await;
+        let response = get_admin_response("/healthz").await;
 
         assert_ok(&response);
     }
@@ -203,14 +219,14 @@ mod tests {
     #[tokio::test]
     async fn readyz_should_return_service_unavailable_until_ready() {
         let state = given_state_with(false, 1000.0);
-        let response = get_response_with(state, "/readyz", None, None).await;
+        let response = get_admin_response_with(state, "/readyz").await;
 
         assert_eq!(StatusCode::SERVICE_UNAVAILABLE, response.status());
     }
 
     #[tokio::test]
     async fn readyz_should_return_ok_when_ready() {
-        let response = get_response("/readyz", None, None).await;
+        let response = get_admin_response("/readyz").await;
 
         assert_ok(&response);
     }
@@ -313,7 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_should_return_ok_with_metric_names() {
-        let response = get_response("/metrics", None, None).await;
+        let response = get_admin_response("/metrics").await;
 
         assert_ok(&response);
         let body = body_of(response).await;
@@ -334,7 +350,7 @@ mod tests {
         )
         .await;
         get_response_with(state.clone(), "/ocpp/AL1000", None, None).await;
-        let response = get_response_with(state, "/metrics", None, None).await;
+        let response = get_admin_response_with(state, "/metrics").await;
 
         let body = body_of(response).await;
         assert!(body.contains("ocpp_auth_requests_total{result=\"success\"} 1"));
@@ -358,7 +374,7 @@ mod tests {
             None,
         )
         .await;
-        let response = get_response_with(state, "/metrics", None, None).await;
+        let response = get_admin_response_with(state, "/metrics").await;
 
         let body = body_of(response).await;
         assert!(body.contains("ocpp_auth_requests_total{result=\"rate_limited\"} 1"));
@@ -366,7 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_should_report_number_of_known_stations() {
-        let response = get_response("/metrics", None, None).await;
+        let response = get_admin_response("/metrics").await;
 
         let body = body_of(response).await;
         assert!(body.contains("ocpp_auth_known_stations 3"));

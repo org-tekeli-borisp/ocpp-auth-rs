@@ -8,7 +8,7 @@ use ocpp_auth_rs::credentials::CredentialStore;
 use ocpp_auth_rs::kafka_consumer;
 use ocpp_auth_rs::metrics::Metrics;
 use ocpp_auth_rs::rate_limit::RateLimiter;
-use ocpp_auth_rs::server::{AppState, app};
+use ocpp_auth_rs::server::{AppState, admin_app, app};
 
 /// Auth attempts per second per station, and the burst allowed on top.
 const RATE_LIMIT_PER_SECOND: f64 = 2.0;
@@ -49,21 +49,35 @@ async fn main() {
         bcrypt_permits: Arc::new(Semaphore::new(bcrypt_permits)),
     });
 
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(8080);
+    let port = read_port("PORT", 8080);
+    let admin_port = read_port("ADMIN_PORT", 8081);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let admin_addr = SocketAddr::from(([0, 0, 0, 0], admin_port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("bind listener");
+    let admin_listener = tokio::net::TcpListener::bind(admin_addr)
+        .await
+        .expect("bind admin listener");
 
     tracing::info!("ocpp-auth-rs listening on http://{addr}");
+    tracing::info!("ocpp-auth-rs admin listening on http://{admin_addr}");
 
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("serve");
+    // Both servers observe the same shutdown signal: the first Ctrl-C/SIGTERM
+    // is broadcast so each listener drains its in-flight requests gracefully.
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let signal = async {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(());
+    };
+    let auth_server = axum::serve(listener, app(state.clone()))
+        .with_graceful_shutdown(shutdown_received(shutdown_tx.subscribe()));
+    let admin_server = axum::serve(admin_listener, admin_app(state))
+        .with_graceful_shutdown(shutdown_received(shutdown_tx.subscribe()));
+
+    let ((), auth_result, admin_result) = tokio::join!(signal, auth_server, admin_server);
+    auth_result.expect("serve");
+    admin_result.expect("serve");
 
     stop.store(true, Ordering::Relaxed);
     if consumer.join().is_err() {
@@ -93,6 +107,18 @@ async fn shutdown_signal() {
         _ = terminate => tracing::info!("received SIGTERM"),
     }
     tracing::info!("shutting down, draining in-flight requests");
+}
+
+/// Resolves once the shared shutdown signal has been broadcast.
+async fn shutdown_received(mut rx: tokio::sync::broadcast::Receiver<()>) {
+    let _ = rx.recv().await;
+}
+
+fn read_port(name: &str, default: u16) -> u16 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 fn require_env(name: &str) -> String {

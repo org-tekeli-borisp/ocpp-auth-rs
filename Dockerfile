@@ -13,4 +13,5 @@ FROM debian:trixie-slim
 
 COPY --from=builder /out/ /usr/local/bin/
 EXPOSE 8080
+EXPOSE 8081
 ENTRYPOINT ["ocpp-auth-rs"]

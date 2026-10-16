@@ -9,6 +9,7 @@ TOPIC="ocpp-auth-stations"
 STATION_ID="AL1000"
 PASSWORD="testpassword"
 AUTH_URL="http://127.0.0.1:18080"
+ADMIN_URL="http://127.0.0.1:18081"
 TRAEIFIK_URL="http://127.0.0.1:80"
 TAB="$(printf '\t')"
 
@@ -51,11 +52,11 @@ kafka_is_healthy() {
 }
 
 auth_is_up() {
-  curl -sf -o /dev/null "${AUTH_URL}/healthz"
+  curl -sf -o /dev/null "${ADMIN_URL}/healthz"
 }
 
 auth_is_ready() {
-  curl -sf -o /dev/null "${AUTH_URL}/readyz"
+  curl -sf -o /dev/null "${ADMIN_URL}/readyz"
 }
 
 traefik_is_up() {
@@ -63,7 +64,7 @@ traefik_is_up() {
 }
 
 station_is_known() {
-  curl -sf "${AUTH_URL}/metrics" | grep -q '^ocpp_auth_known_stations 1$'
+  curl -sf "${ADMIN_URL}/metrics" | grep -q '^ocpp_auth_known_stations 1$'
 }
 
 http_code() {
