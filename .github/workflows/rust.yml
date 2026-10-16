@@ -35,3 +35,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run E2E suite
         run: bash e2e/run_e2e.sh
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit
