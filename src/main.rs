@@ -4,15 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::Semaphore;
 
+use ocpp_auth_rs::config::Config;
 use ocpp_auth_rs::credentials::CredentialStore;
 use ocpp_auth_rs::kafka_consumer;
 use ocpp_auth_rs::metrics::Metrics;
 use ocpp_auth_rs::rate_limit::RateLimiter;
 use ocpp_auth_rs::server::{AppState, admin_app, app};
-
-/// Auth attempts per second per station, and the burst allowed on top.
-const RATE_LIMIT_PER_SECOND: f64 = 2.0;
-const RATE_LIMIT_BURST: f64 = 10.0;
 
 #[tokio::main]
 async fn main() {
@@ -23,8 +20,13 @@ async fn main() {
         )
         .init();
 
-    let brokers = require_env("KAFKA_BROKERS");
-    let topic = require_env("OCPP_AUTH_TOPIC");
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(err) => {
+            tracing::error!("{err}");
+            std::process::exit(1);
+        }
+    };
 
     let store = Arc::new(CredentialStore::new());
     let ready = Arc::new(AtomicBool::new(false));
@@ -32,27 +34,26 @@ async fn main() {
     let metrics = Arc::new(Metrics::new());
     let consumer = kafka_consumer::start(
         store.clone(),
-        &brokers,
-        &topic,
+        &config.kafka_brokers,
+        &config.kafka_topic,
         ready.clone(),
         stop.clone(),
         metrics.clone(),
     );
 
-    let bcrypt_permits =
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let state = Arc::new(AppState {
         store,
         metrics,
         ready,
-        rate_limiter: Arc::new(RateLimiter::new(RATE_LIMIT_PER_SECOND, RATE_LIMIT_BURST)),
-        bcrypt_permits: Arc::new(Semaphore::new(bcrypt_permits)),
+        rate_limiter: Arc::new(RateLimiter::new(
+            config.rate_limit_per_second,
+            config.rate_limit_burst,
+        )),
+        bcrypt_permits: Arc::new(Semaphore::new(config.bcrypt_permits)),
     });
 
-    let port = read_port("PORT", 8080);
-    let admin_port = read_port("ADMIN_PORT", 8081);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let admin_addr = SocketAddr::from(([0, 0, 0, 0], admin_port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let admin_addr = SocketAddr::from(([0, 0, 0, 0], config.admin_port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("bind listener");
@@ -60,7 +61,12 @@ async fn main() {
         .await
         .expect("bind admin listener");
 
-    tracing::info!("ocpp-auth-rs listening on http://{addr}");
+    tracing::info!(
+        "ocpp-auth-rs listening on http://{addr} \
+         (rate limit {} per second, burst {})",
+        config.rate_limit_per_second,
+        config.rate_limit_burst,
+    );
     tracing::info!("ocpp-auth-rs admin listening on http://{admin_addr}");
 
     // Both servers observe the same shutdown signal: the first Ctrl-C/SIGTERM
@@ -112,18 +118,4 @@ async fn shutdown_signal() {
 /// Resolves once the shared shutdown signal has been broadcast.
 async fn shutdown_received(mut rx: tokio::sync::broadcast::Receiver<()>) {
     let _ = rx.recv().await;
-}
-
-fn read_port(name: &str, default: u16) -> u16 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-fn require_env(name: &str) -> String {
-    match std::env::var(name) {
-        Ok(value) if !value.is_empty() => value,
-        _ => panic!("{name} environment variable is required"),
-    }
 }
