@@ -91,6 +91,13 @@ is JSON:
 - Readiness flips once every assigned partition has been consumed to its high
   watermark. A topic that is not visible in the cluster yet keeps the service
   unready; an **empty** topic becomes ready immediately.
+- The consumer is a plain earliest reader: it stores and commits no offsets
+  and keeps no consumer-group state. Every start assigns the topic's
+  partitions explicitly and replays them from offset 0, so the topic itself is
+  the only durable state. (librdkafka requires a group id for any partition
+  assignment, so each instance uses an ephemeral, unique one.) Partitions are
+  assigned once at startup — adding partitions to the topic requires a service
+  restart.
 
 ## Operational behaviour / runbook
 

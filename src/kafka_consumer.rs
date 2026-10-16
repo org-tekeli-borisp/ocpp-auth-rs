@@ -7,6 +7,7 @@ use std::time::Duration;
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::{Offset, TopicPartitionList};
 use serde::Deserialize;
 use tracing::{error, warn};
 
@@ -94,6 +95,12 @@ pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[
 /// topic. `ready` is set once the initial read of the topic has been applied,
 /// `stop` requests the thread to finish its current poll cycle and return.
 /// `metrics` records message freshness and poll errors for observability.
+///
+/// The consumer is a plain earliest reader: it stores and commits no offsets
+/// and keeps no consumer-group state. On every start it assigns the topic's
+/// partitions explicitly and replays them from offset 0, so the compacted
+/// topic itself is the only durable state. Partitions are assigned once at
+/// startup; adding partitions to the topic requires a service restart.
 pub fn start(
     store: Arc<CredentialStore>,
     brokers: &str,
@@ -105,16 +112,16 @@ pub fn start(
     let brokers = brokers.to_owned();
     let topic = topic.to_owned();
     std::thread::spawn(move || {
+        // librdkafka requires a consumer group for any partition assignment,
+        // but none of the group's stateful features are used here, so the id
+        // is an ephemeral per-instance name (see `ephemeral_group_id`).
+        let group_id = ephemeral_group_id();
         let consumer: BaseConsumer = ClientConfig::new()
             .set("bootstrap.servers", brokers.as_str())
-            .set("group.id", "ocpp-auth-rs")
-            .set("auto.offset.reset", "earliest")
-            .set("enable.auto.offset.store", "false")
+            .set("group.id", group_id.as_str())
             .create()
             .expect("create kafka consumer");
-        consumer
-            .subscribe(&[topic.as_str()])
-            .expect("subscribe to topic");
+        assign_partitions(&consumer, &topic, &stop, &metrics);
         let mut last_offsets: HashMap<i32, i64> = HashMap::new();
         while !stop.load(Ordering::Relaxed) {
             match consumer.poll(Duration::from_millis(100)) {
@@ -146,6 +153,52 @@ pub fn start(
         }
         tracing::info!("kafka consumer stopped");
     })
+}
+
+/// Ephemeral per-instance group id: process pid plus a sub-second nonce, so
+/// concurrent or restarting instances never share a group. The group exists
+/// only to satisfy librdkafka's assignment protocol; no offsets are ever
+/// stored or committed under this name.
+fn ephemeral_group_id() -> String {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    format!("ocpp-auth-rs-{:x}-{:x}", std::process::id(), nonce)
+}
+
+/// Assigns every partition of `topic` at offset 0, waiting for the topic to
+/// appear in the cluster metadata. Returns without assigning when `stop` is
+/// set, so a missing topic never blocks shutdown.
+fn assign_partitions(consumer: &BaseConsumer, topic: &str, stop: &AtomicBool, metrics: &Metrics) {
+    while !stop.load(Ordering::Relaxed) {
+        match consumer.fetch_metadata(Some(topic), Duration::from_secs(5)) {
+            Ok(metadata) => {
+                let partitions: Vec<i32> = metadata
+                    .topics()
+                    .iter()
+                    .filter(|topic_metadata| topic_metadata.name() == topic)
+                    .flat_map(|topic_metadata| topic_metadata.partitions().iter().map(|p| p.id()))
+                    .collect();
+                if !partitions.is_empty() {
+                    let mut assignment = TopicPartitionList::new();
+                    for partition in partitions {
+                        assignment
+                            .add_partition_offset(topic, partition, Offset::Beginning)
+                            .expect("add partition to assignment");
+                    }
+                    consumer
+                        .assign(&assignment)
+                        .expect("assign topic partitions");
+                    return;
+                }
+            }
+            Err(e) => {
+                metrics.record_kafka_error();
+                warn!(error = %e, topic, "kafka metadata fetch failed, retrying");
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 /// True once every assigned partition of `topic` has been consumed up to its
