@@ -49,6 +49,10 @@ async fn main() {
             config.rate_limit_per_second,
             config.rate_limit_burst,
         )),
+        ip_rate_limiter: Arc::new(RateLimiter::new(
+            config.rate_limit_ip_per_second,
+            config.rate_limit_ip_burst,
+        )),
         bcrypt_permits: Arc::new(Semaphore::new(config.bcrypt_permits)),
     });
 
@@ -63,9 +67,11 @@ async fn main() {
 
     tracing::info!(
         "ocpp-auth-rs listening on http://{addr} \
-         (rate limit {} per second, burst {})",
+         (rate limit {} per second, burst {}; per ip {} per second, burst {})",
         config.rate_limit_per_second,
         config.rate_limit_burst,
+        config.rate_limit_ip_per_second,
+        config.rate_limit_ip_burst,
     );
     tracing::info!("ocpp-auth-rs admin listening on http://{admin_addr}");
 

@@ -18,6 +18,11 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub ready: Arc<AtomicBool>,
     pub rate_limiter: Arc<RateLimiter>,
+    /// Second limiter keyed by client IP: one host cannot burn a known
+    /// station's bucket to lock out its legitimate reconnects, and spraying
+    /// random station ids exhausts the attacker's own bucket instead of the
+    /// limiter's key budget.
+    pub ip_rate_limiter: Arc<RateLimiter>,
     /// Bounds concurrent bcrypt verifications so a credential-stuffing flood
     /// cannot saturate the host with hashing work.
     pub bcrypt_permits: Arc<Semaphore>,
@@ -69,6 +74,19 @@ async fn auth(State(state): State<Arc<AppState>>, request: Request) -> Response 
     let Some(station_id) = crate::station_id::station_id_from_path(path) else {
         return unauthorized(&state);
     };
+    // Traefik always sets X-Forwarded-For; requests without it (direct dev
+    // calls) skip the IP check rather than share one bucket for every caller.
+    let client_ip = request
+        .headers()
+        .get("X-Forwarded-For")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(',').next().unwrap_or_default().trim())
+        .filter(|value| !value.is_empty());
+    if let Some(client_ip) = client_ip
+        && !state.ip_rate_limiter.allow(client_ip)
+    {
+        return rate_limited(&state);
+    }
     if !state.rate_limiter.allow(&station_id) {
         return rate_limited(&state);
     }
@@ -138,13 +156,20 @@ mod tests {
         given_state_with(true, 1000.0)
     }
 
-    /// Rate limiter without refill so burst behaviour is deterministic in tests.
+    /// Rate limiters without refill so burst behaviour is deterministic in
+    /// tests; the per-IP bucket is generous enough not to interfere.
     fn given_state_with(ready: bool, auth_burst: f64) -> Arc<AppState> {
+        given_state_with_ip_burst(ready, auth_burst, 1000.0)
+    }
+
+    /// Same, with an explicit per-IP burst for testing the IP limiter.
+    fn given_state_with_ip_burst(ready: bool, auth_burst: f64, ip_burst: f64) -> Arc<AppState> {
         Arc::new(AppState {
             store: given_store(),
             metrics: Arc::new(Metrics::new()),
             ready: Arc::new(AtomicBool::new(ready)),
             rate_limiter: Arc::new(RateLimiter::new(0.0, auth_burst)),
+            ip_rate_limiter: Arc::new(RateLimiter::new(0.0, ip_burst)),
             bcrypt_permits: Arc::new(Semaphore::new(8)),
         })
     }
@@ -173,6 +198,20 @@ mod tests {
         forwarded_uri: Option<&str>,
     ) -> Response {
         get_response_with(given_state(), path, authorization, forwarded_uri).await
+    }
+
+    async fn get_response_with_forwarded_for(
+        state: Arc<AppState>,
+        forwarded_for: &str,
+    ) -> Response {
+        let request = Request::builder()
+            .uri("/ocpp/AL1000")
+            .header("Authorization", VALID_AUTHORIZATION)
+            .header("X-Forwarded-For", forwarded_for)
+            .body(Body::empty())
+            .unwrap();
+
+        app(state).oneshot(request).await.unwrap()
     }
 
     async fn get_admin_response_with(state: Arc<AppState>, path: &str) -> Response {
@@ -264,6 +303,54 @@ mod tests {
                 .get(RETRY_AFTER)
                 .and_then(|value| value.to_str().ok())
         );
+    }
+
+    #[tokio::test]
+    async fn auth_should_return_rate_limited_when_ip_burst_is_exceeded() {
+        let state = given_state_with_ip_burst(true, 1000.0, 2.0);
+
+        assert_ok(&get_response_with_forwarded_for(state.clone(), "203.0.113.7").await);
+        assert_ok(&get_response_with_forwarded_for(state.clone(), "203.0.113.7").await);
+        let response = get_response_with_forwarded_for(state, "203.0.113.7").await;
+
+        assert_eq!(StatusCode::TOO_MANY_REQUESTS, response.status());
+        assert_eq!(
+            Some("1"),
+            response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_should_track_ip_limits_independently() {
+        let state = given_state_with_ip_burst(true, 1000.0, 1.0);
+
+        assert_ok(&get_response_with_forwarded_for(state.clone(), "203.0.113.7").await);
+        let response = get_response_with_forwarded_for(state, "198.51.100.4").await;
+
+        assert_ok(&response);
+    }
+
+    #[tokio::test]
+    async fn auth_should_work_without_forwarded_for_header() {
+        let state = given_state_with_ip_burst(true, 1000.0, 1.0);
+
+        let response =
+            get_response_with(state, "/ocpp/AL1000", Some(VALID_AUTHORIZATION), None).await;
+
+        assert_ok(&response);
+    }
+
+    #[tokio::test]
+    async fn auth_should_use_first_entry_of_forwarded_for_chain() {
+        let state = given_state_with_ip_burst(true, 1000.0, 1.0);
+
+        assert_ok(&get_response_with_forwarded_for(state.clone(), "203.0.113.7, 10.0.0.1").await);
+        let response = get_response_with_forwarded_for(state, "203.0.113.7, 10.0.0.2").await;
+
+        assert_eq!(StatusCode::TOO_MANY_REQUESTS, response.status());
     }
 
     #[tokio::test]

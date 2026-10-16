@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// Token-bucket rate limiter keyed by station id.
+/// Token-bucket rate limiter keyed by an opaque string (station id or client IP).
 ///
 /// Each key starts with `burst` tokens that refill at `refill_per_second`.
 /// Buckets that have been idle long enough to be full again are dropped, so

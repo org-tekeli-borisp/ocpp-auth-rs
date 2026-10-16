@@ -9,6 +9,10 @@
 //! - `RATE_LIMIT_PER_SECOND`: auth tokens refilled per second per station (default `2.0`).
 //! - `RATE_LIMIT_BURST`: auth token bucket capacity per station (default `10.0`,
 //!   must be at least `1.0` or every request would be rejected).
+//! - `RATE_LIMIT_IP_PER_SECOND`: auth tokens refilled per second per client IP
+//!   (default `20.0`).
+//! - `RATE_LIMIT_IP_BURST`: auth token bucket capacity per client IP (default `50.0`,
+//!   must be at least `1.0` or every request would be rejected).
 //! - `BCRYPT_CONCURRENCY`: simultaneous bcrypt verifications (default: the
 //!   machine's parallelism, at least `1`).
 
@@ -20,6 +24,10 @@ const DEFAULT_ADMIN_PORT: u16 = 8081;
 const DEFAULT_RATE_LIMIT_PER_SECOND: f64 = 2.0;
 /// Auth token bucket capacity unless `RATE_LIMIT_BURST` says otherwise.
 const DEFAULT_RATE_LIMIT_BURST: f64 = 10.0;
+/// Per-IP auth token refill rate unless `RATE_LIMIT_IP_PER_SECOND` says otherwise.
+const DEFAULT_RATE_LIMIT_IP_PER_SECOND: f64 = 20.0;
+/// Per-IP auth token bucket capacity unless `RATE_LIMIT_IP_BURST` says otherwise.
+const DEFAULT_RATE_LIMIT_IP_BURST: f64 = 50.0;
 
 /// All runtime settings, sourced from the environment.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +38,8 @@ pub struct Config {
     pub kafka_topic: String,
     pub rate_limit_per_second: f64,
     pub rate_limit_burst: f64,
+    pub rate_limit_ip_per_second: f64,
+    pub rate_limit_ip_burst: f64,
     pub bcrypt_permits: usize,
 }
 
@@ -87,6 +97,10 @@ impl Config {
         if rate_limit_burst < 1.0 {
             return Err("RATE_LIMIT_BURST must be at least 1.0".to_string());
         }
+        let rate_limit_ip_burst = rate("RATE_LIMIT_IP_BURST", DEFAULT_RATE_LIMIT_IP_BURST)?;
+        if rate_limit_ip_burst < 1.0 {
+            return Err("RATE_LIMIT_IP_BURST must be at least 1.0".to_string());
+        }
 
         Ok(Config {
             port: port("PORT", DEFAULT_PORT)?,
@@ -95,6 +109,11 @@ impl Config {
             kafka_topic: required("OCPP_AUTH_TOPIC")?,
             rate_limit_per_second: rate("RATE_LIMIT_PER_SECOND", DEFAULT_RATE_LIMIT_PER_SECOND)?,
             rate_limit_burst,
+            rate_limit_ip_per_second: rate(
+                "RATE_LIMIT_IP_PER_SECOND",
+                DEFAULT_RATE_LIMIT_IP_PER_SECOND,
+            )?,
+            rate_limit_ip_burst,
             bcrypt_permits: permits()?,
         })
     }
@@ -139,6 +158,8 @@ mod tests {
         assert_eq!(config.kafka_topic, "ocpp-auth-stations");
         assert_eq!(config.rate_limit_per_second, 2.0);
         assert_eq!(config.rate_limit_burst, 10.0);
+        assert_eq!(config.rate_limit_ip_per_second, 20.0);
+        assert_eq!(config.rate_limit_ip_burst, 50.0);
         assert!(config.bcrypt_permits >= 1);
     }
 
@@ -150,6 +171,8 @@ mod tests {
             ("ADMIN_PORT", "9091"),
             ("RATE_LIMIT_PER_SECOND", "5.5"),
             ("RATE_LIMIT_BURST", "20"),
+            ("RATE_LIMIT_IP_PER_SECOND", "30.5"),
+            ("RATE_LIMIT_IP_BURST", "80"),
             ("BCRYPT_CONCURRENCY", "4"),
         ]));
 
@@ -159,6 +182,8 @@ mod tests {
         assert_eq!(config.admin_port, 9091);
         assert_eq!(config.rate_limit_per_second, 5.5);
         assert_eq!(config.rate_limit_burst, 20.0);
+        assert_eq!(config.rate_limit_ip_per_second, 30.5);
+        assert_eq!(config.rate_limit_ip_burst, 80.0);
         assert_eq!(config.bcrypt_permits, 4);
     }
 
@@ -212,5 +237,15 @@ mod tests {
         let error = given_config(&env).unwrap_err();
 
         assert!(error.contains("RATE_LIMIT_BURST"), "{error}");
+    }
+
+    #[test]
+    fn should_error_when_ip_burst_is_below_one() {
+        let mut env = given_required_env();
+        env.extend(given_env(&[("RATE_LIMIT_IP_BURST", "0.5")]));
+
+        let error = given_config(&env).unwrap_err();
+
+        assert!(error.contains("RATE_LIMIT_IP_BURST"), "{error}");
     }
 }
