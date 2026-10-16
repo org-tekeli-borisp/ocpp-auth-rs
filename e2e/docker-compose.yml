@@ -29,6 +29,12 @@ services:
       OCPP_AUTH_TOPIC: ocpp-auth-stations
       PORT: "8080"
       ADMIN_PORT: "8081"
+      # Rate limits default to the service's own defaults so run_e2e.sh keeps
+      # today's behaviour; run_loadtest.sh overrides them to unmask throughput.
+      RATE_LIMIT_PER_SECOND: "${RATE_LIMIT_PER_SECOND:-2.0}"
+      RATE_LIMIT_BURST: "${RATE_LIMIT_BURST:-10.0}"
+      RATE_LIMIT_IP_PER_SECOND: "${RATE_LIMIT_IP_PER_SECOND:-20.0}"
+      RATE_LIMIT_IP_BURST: "${RATE_LIMIT_IP_BURST:-50.0}"
     ports:
       - "127.0.0.1:18080:8080"
       - "127.0.0.1:18081:8081"
