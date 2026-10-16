@@ -89,14 +89,16 @@ is JSON:
   password or with an invalid/too-expensive hash, missing or non-UTF-8 key —
   are skipped with a warning; the previous store entry is left untouched.
 - Readiness flips once every assigned partition has been consumed to its high
-  watermark. An empty assignment or an empty topic is **not** ready.
+  watermark. A topic that is not visible in the cluster yet keeps the service
+  unready; an **empty** topic becomes ready immediately.
 
 ## Operational behaviour / runbook
 
 **Startup.** The service binds both ports immediately, but `/readyz` returns
 `503` until the initial topic read is applied — keep stations out of rotation
-until the credential state is complete. An empty topic means the service never
-becomes ready; check that `OCPP_AUTH_TOPIC` exists and is the right name.
+until the credential state is complete. A *missing* topic keeps the service
+unready; check that `OCPP_AUTH_TOPIC` exists and is the right name. An empty
+topic becomes ready immediately (there is simply nothing to onboard yet).
 
 **Kafka outage after ready.** The consumer retries; the credential store keeps
 serving the last known state, so authentication continues on stale-but-valid

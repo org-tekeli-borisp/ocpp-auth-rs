@@ -150,7 +150,8 @@ pub fn start(
 
 /// True once every assigned partition of `topic` has been consumed up to its
 /// high watermark, i.e. the compacted topic state is fully present in the
-/// store. An empty assignment or an empty topic is not considered ready.
+/// store. An empty assignment (the topic is not visible in the cluster yet)
+/// is not ready; an empty topic is, since there is no state left to apply.
 fn caught_up(consumer: &BaseConsumer, topic: &str, last_offsets: &HashMap<i32, i64>) -> bool {
     let Ok(assignment) = consumer.assignment() else {
         return false;

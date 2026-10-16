@@ -5,12 +5,37 @@ use std::time::{Duration, Instant};
 use ocpp_auth_rs::credentials::CredentialStore;
 use ocpp_auth_rs::kafka_consumer;
 use ocpp_auth_rs::metrics::Metrics;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
 use testcontainers::runners::SyncRunner;
 use testcontainers_modules::kafka::apache::Kafka;
 
 const TOPIC: &str = "ocpp-auth-stations";
+
+/// The testcontainers kafka-native image ships no CLI scripts, so topics are
+/// created through the admin API instead of `kafka-topics.sh`.
+fn create_empty_topic(brokers: &str) {
+    let admin: AdminClient<DefaultClientContext> = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .create()
+        .expect("create kafka admin client");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    runtime
+        .block_on(admin.create_topics(
+            &[NewTopic::new(TOPIC, 1, TopicReplication::Fixed(1))],
+            &AdminOptions::new(),
+        ))
+        .expect("create topic")
+        .into_iter()
+        .for_each(|result| {
+            result.expect("create empty topic");
+        });
+}
 
 fn produce(brokers: &str, key: &str, value: Option<&str>) {
     let producer: BaseProducer = ClientConfig::new()
@@ -141,4 +166,40 @@ fn store_should_be_populated_from_compacted_topic_and_track_live_updates() {
         "freshness metric should hold the time of the last consumed message, got {timestamp}"
     );
     assert_eq!(rendered_value(&metrics, "ocpp_auth_kafka_errors_total"), 0);
+}
+
+#[test]
+fn consumer_should_be_ready_immediately_for_an_empty_topic() {
+    let container = Kafka::default().start().expect("start kafka container");
+    let host = container.get_host().expect("get container host");
+    let port = container
+        .get_host_port_ipv4(9092)
+        .expect("get mapped kafka port");
+    let broker = format!("{host}:{port}");
+
+    create_empty_topic(&broker);
+
+    let store = Arc::new(CredentialStore::new());
+    let ready = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    let metrics = Arc::new(Metrics::new());
+    kafka_consumer::start(
+        store.clone(),
+        &broker,
+        TOPIC,
+        ready.clone(),
+        stop.clone(),
+        metrics.clone(),
+    );
+
+    wait_until(
+        Duration::from_secs(30),
+        "consumer to become ready on an empty topic",
+        || ready.load(Ordering::Relaxed),
+    );
+    assert!(
+        store.is_empty(),
+        "an empty topic must not apply any credentials"
+    );
+    stop.store(true, Ordering::Relaxed);
 }
