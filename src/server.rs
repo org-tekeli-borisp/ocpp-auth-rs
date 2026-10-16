@@ -319,6 +319,8 @@ mod tests {
         let body = body_of(response).await;
         assert!(body.contains("ocpp_auth_requests_total"));
         assert!(body.contains("ocpp_auth_known_stations"));
+        assert!(body.contains("ocpp_auth_kafka_last_message_timestamp_seconds 0"));
+        assert!(body.contains("ocpp_auth_kafka_errors_total 0"));
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ use serde::Deserialize;
 use tracing::{error, warn};
 
 use crate::credentials::{AuthType, CredentialStore};
+use crate::metrics::Metrics;
 
 #[derive(Deserialize)]
 struct StationCredentials {
@@ -92,12 +93,14 @@ pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[
 /// Starts a consumer thread that keeps `store` in sync with the compacted
 /// topic. `ready` is set once the initial read of the topic has been applied,
 /// `stop` requests the thread to finish its current poll cycle and return.
+/// `metrics` records message freshness and poll errors for observability.
 pub fn start(
     store: Arc<CredentialStore>,
     brokers: &str,
     topic: &str,
     ready: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    metrics: Arc<Metrics>,
 ) -> JoinHandle<()> {
     let brokers = brokers.to_owned();
     let topic = topic.to_owned();
@@ -116,6 +119,7 @@ pub fn start(
         while !stop.load(Ordering::Relaxed) {
             match consumer.poll(Duration::from_millis(100)) {
                 Some(Ok(message)) => {
+                    metrics.record_kafka_message();
                     last_offsets.insert(message.partition(), message.offset());
                     let Some(key) = message.key() else {
                         warn!("skipping message without key");
@@ -127,7 +131,10 @@ pub fn start(
                     };
                     apply_message(&store, station_id, message.payload());
                 }
-                Some(Err(e)) => error!(error = %e, "kafka poll failed"),
+                Some(Err(e)) => {
+                    metrics.record_kafka_error();
+                    error!(error = %e, "kafka poll failed");
+                }
                 None => {
                     if !ready.load(Ordering::Relaxed) && caught_up(&consumer, &topic, &last_offsets)
                     {

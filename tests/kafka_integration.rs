@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use ocpp_auth_rs::credentials::CredentialStore;
 use ocpp_auth_rs::kafka_consumer;
+use ocpp_auth_rs::metrics::Metrics;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
 use testcontainers::runners::SyncRunner;
@@ -37,6 +38,17 @@ fn wait_until(timeout: Duration, description: &str, mut condition: impl FnMut() 
     }
 }
 
+fn rendered_value(metrics: &Metrics, name: &str) -> i64 {
+    metrics
+        .render(0)
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(&format!("{name} "))
+                .and_then(|value| value.trim().parse::<i64>().ok())
+        })
+        .unwrap_or_else(|| panic!("{name} missing from rendered metrics"))
+}
+
 #[test]
 fn store_should_be_populated_from_compacted_topic_and_track_live_updates() {
     let container = Kafka::default().start().expect("start kafka container");
@@ -62,7 +74,20 @@ fn store_should_be_populated_from_compacted_topic_and_track_live_updates() {
     let store = Arc::new(CredentialStore::new());
     let ready = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
-    kafka_consumer::start(store.clone(), &broker, TOPIC, ready.clone(), stop.clone());
+    let metrics = Arc::new(Metrics::new());
+    kafka_consumer::start(
+        store.clone(),
+        &broker,
+        TOPIC,
+        ready.clone(),
+        stop.clone(),
+        metrics.clone(),
+    );
+    assert_eq!(
+        rendered_value(&metrics, "ocpp_auth_kafka_last_message_timestamp_seconds"),
+        0,
+        "freshness metric should start at zero before any message is consumed"
+    );
 
     wait_until(
         Duration::from_secs(30),
@@ -106,4 +131,14 @@ fn store_should_be_populated_from_compacted_topic_and_track_live_updates() {
         store.verify("D", "D", password_d),
         "station D should be Basic and accept its password"
     );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is past the unix epoch")
+        .as_secs() as i64;
+    let timestamp = rendered_value(&metrics, "ocpp_auth_kafka_last_message_timestamp_seconds");
+    assert!(
+        timestamp > 0 && timestamp <= now + 1,
+        "freshness metric should hold the time of the last consumed message, got {timestamp}"
+    );
+    assert_eq!(rendered_value(&metrics, "ocpp_auth_kafka_errors_total"), 0);
 }

@@ -29,14 +29,21 @@ async fn main() {
     let store = Arc::new(CredentialStore::new());
     let ready = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
-    let consumer =
-        kafka_consumer::start(store.clone(), &brokers, &topic, ready.clone(), stop.clone());
+    let metrics = Arc::new(Metrics::new());
+    let consumer = kafka_consumer::start(
+        store.clone(),
+        &brokers,
+        &topic,
+        ready.clone(),
+        stop.clone(),
+        metrics.clone(),
+    );
 
     let bcrypt_permits =
         std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let state = Arc::new(AppState {
         store,
-        metrics: Arc::new(Metrics::new()),
+        metrics,
         ready,
         rate_limiter: Arc::new(RateLimiter::new(RATE_LIMIT_PER_SECOND, RATE_LIMIT_BURST)),
         bcrypt_permits: Arc::new(Semaphore::new(bcrypt_permits)),
