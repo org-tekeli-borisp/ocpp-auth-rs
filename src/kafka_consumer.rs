@@ -19,6 +19,36 @@ struct StationCredentials {
     password: Option<String>,
 }
 
+/// Upper bound on the bcrypt cost factor accepted at ingestion. Verification
+/// time doubles with every increment, so a faulty or compromised producer
+/// publishing e.g. cost 31 would block a verification thread for minutes.
+const MAX_BCRYPT_COST: u32 = 15;
+
+/// True if `hash` is a syntactically valid bcrypt hash
+/// (`$2$`/`$2a$`/`$2b$`/`$2y$` + two-digit cost + `$` + 53 salt+hash chars
+/// from the bcrypt base64 alphabet) with a cost of at most
+/// [`MAX_BCRYPT_COST`].
+fn is_valid_bcrypt_hash(hash: &str) -> bool {
+    let Some(rest) = ["$2$", "$2a$", "$2b$", "$2y$"]
+        .into_iter()
+        .find_map(|prefix| hash.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    let Some((cost, salt_and_hash)) = rest.split_once('$') else {
+        return false;
+    };
+    cost.len() == 2
+        && cost.bytes().all(|byte| byte.is_ascii_digit())
+        && cost
+            .parse::<u32>()
+            .is_ok_and(|cost| cost <= MAX_BCRYPT_COST)
+        && salt_and_hash.len() == 53
+        && salt_and_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'/')
+}
+
 pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[u8]>) {
     let Some(value) = value else {
         store.remove(station_id);
@@ -32,7 +62,16 @@ pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[
         "NONE" => AuthType::NoAuth,
         "FORBIDDEN" => AuthType::Forbidden,
         "BASIC" => match parsed.password {
-            Some(password_hash) => AuthType::Basic { password_hash },
+            Some(password_hash) if is_valid_bcrypt_hash(&password_hash) => {
+                AuthType::Basic { password_hash }
+            }
+            Some(_) => {
+                warn!(
+                    station_id,
+                    "skipping BASIC message with invalid password hash"
+                );
+                return;
+            }
             None => {
                 warn!(station_id, "skipping BASIC message without password");
                 return;
@@ -181,6 +220,27 @@ mod tests {
         apply_message(&store, "AL1000", Some(value));
 
         assert!(!store.verify("AL1000", "AL1000", b"anything"));
+    }
+
+    #[test]
+    fn should_skip_basic_with_password_hash_above_max_cost() {
+        let store = given_store();
+        let password_hash = format!("$2b${:02}{}", MAX_BCRYPT_COST + 1, "C".repeat(53));
+        let value = given_basic_value(&password_hash);
+
+        apply_message(&store, "AL1000", Some(value.as_bytes()));
+
+        assert!(!store.contains("AL1000"));
+    }
+
+    #[test]
+    fn should_skip_basic_with_malformed_password_hash() {
+        let store = given_store();
+        let value = given_basic_value("not-a-hash");
+
+        apply_message(&store, "AL1000", Some(value.as_bytes()));
+
+        assert!(!store.contains("AL1000"));
     }
 
     #[test]
