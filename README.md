@@ -100,9 +100,9 @@ is JSON:
   and keeps no consumer-group state. Every start assigns the topic's
   partitions explicitly and replays them from offset 0, so the topic itself is
   the only durable state. (librdkafka requires a group id for any partition
-  assignment, so each instance uses an ephemeral, unique one.) Partitions are
-  assigned once at startup — adding partitions to the topic requires a service
-  restart.
+  assignment, so each cycle uses an ephemeral, unique one.) Partitions are
+  assigned at the start of every consumer cycle — a partition added to the
+  topic is picked up no later than the next (possibly automatic) cycle restart.
 
 ## Operational behaviour / runbook
 
@@ -119,7 +119,12 @@ credentials. Alert on `ocpp_auth_kafka_errors_total` increasing and on
 that a compacted topic with no changes legitimately leaves the timestamp old.
 
 **Shutdown.** SIGTERM or Ctrl-C triggers graceful shutdown: both listeners stop
-accepting and drain in-flight requests, then the consumer thread is stopped.
+accepting and drain in-flight requests, then the consumer thread is stopped. A
+failing or panicking consumer cycle is logged and restarted automatically after
+a one-second backoff while the service is running; readiness never falls back,
+so the service keeps serving the last known state across restarts. Treat
+repeated cycle restarts like a Kafka outage — the error and freshness metrics
+keep growing, so the alerts above still fire.
 
 **Rate limiting.** Token buckets per station (default 2/s, burst 10) and per
 client IP (default 20/s, burst 50), keyed by the first entry of

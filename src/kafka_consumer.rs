@@ -96,16 +96,24 @@ pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[
     store.upsert(station_id, auth);
 }
 
-/// Starts a consumer thread that keeps `store` in sync with the compacted
-/// topic. `ready` is set once the initial read of the topic has been applied,
-/// `stop` requests the thread to finish its current poll cycle and return.
-/// `metrics` records message freshness and poll errors for observability.
+/// Starts a supervised consumer thread that keeps `store` in sync with the
+/// compacted topic. `ready` is set once the initial read of the topic has been
+/// applied, `stop` requests the thread to finish its current poll cycle and
+/// return. `metrics` records message freshness and poll errors for
+/// observability.
 ///
-/// The consumer is a plain earliest reader: it stores and commits no offsets
+/// The consumer runs in supervised cycles (see [`supervise`]): a cycle that
+/// fails or panics — e.g. while creating the consumer or assigning partitions
+/// — is logged and restarted after a short backoff, until `stop` is set. A
+/// restart never resets `ready`, so the service keeps serving the last known
+/// state while a new cycle catches up.
+///
+/// Each cycle is a plain earliest reader: it stores and commits no offsets
 /// and keeps no consumer-group state. On every start it assigns the topic's
 /// partitions explicitly and replays them from offset 0, so the compacted
-/// topic itself is the only durable state. Partitions are assigned once at
-/// startup; adding partitions to the topic requires a service restart.
+/// topic itself is the only durable state. Partitions are assigned at the
+/// start of each cycle, so a partition added to the topic is picked up no
+/// later than the next (possibly automatic) cycle restart.
 pub fn start(
     store: Arc<CredentialStore>,
     brokers: &str,
@@ -117,51 +125,103 @@ pub fn start(
     let brokers = brokers.to_owned();
     let topic = topic.to_owned();
     std::thread::spawn(move || {
-        // librdkafka requires a consumer group for any partition assignment,
-        // but none of the group's stateful features are used here, so the id
-        // is an ephemeral per-instance name (see `ephemeral_group_id`).
-        let group_id = ephemeral_group_id();
-        let consumer: BaseConsumer = ClientConfig::new()
-            .set("bootstrap.servers", brokers.as_str())
-            .set("group.id", group_id.as_str())
-            .create()
-            .expect("create kafka consumer");
-        assign_partitions(&consumer, &topic, &stop, &metrics);
-        let mut last_offsets: HashMap<i32, i64> = HashMap::new();
-        while !stop.load(Ordering::Relaxed) {
-            match consumer.poll(Duration::from_millis(100)) {
-                Some(Ok(message)) => {
-                    metrics.record_kafka_message();
-                    last_offsets.insert(message.partition(), message.offset());
-                    let Some(key) = message.key() else {
-                        warn!("skipping message without key");
-                        continue;
-                    };
-                    let Ok(station_id) = std::str::from_utf8(key) else {
-                        warn!("skipping message with non-UTF-8 key");
-                        continue;
-                    };
-                    apply_message(&store, station_id, message.payload());
-                }
-                Some(Err(e)) => {
-                    metrics.record_kafka_error();
-                    error!(error = %e, "kafka poll failed");
-                }
-                None => {
-                    if !ready.load(Ordering::Relaxed) && caught_up(&consumer, &topic, &last_offsets)
-                    {
-                        ready.store(true, Ordering::Relaxed);
-                        tracing::info!(topic = topic.as_str(), "initial topic read complete");
-                    }
-                }
-            }
-        }
+        supervise(&stop, Duration::from_secs(1), std::thread::sleep, || {
+            run_cycle(&store, &brokers, &topic, &ready, &stop, &metrics)
+        });
         tracing::info!("kafka consumer stopped");
     })
 }
 
-/// Ephemeral per-instance group id: process pid plus a sub-second nonce, so
-/// concurrent or restarting instances never share a group. The group exists
+/// Runs `cycle` repeatedly until `stop` is set. Every cycle is panic-isolated:
+/// a panicking cycle is logged and restarted after `cycle_backoff`, so a
+/// transient failure (unreachable broker, topic metadata hiccup) inside the
+/// cycle cannot silently kill the consumer thread. A cycle that returns
+/// without `stop` being set should not happen, but is restarted with the same
+/// backoff, defensively. `backoff_sleep` abstracts the wait so tests do not
+/// have to sleep.
+fn supervise(
+    stop: &AtomicBool,
+    cycle_backoff: Duration,
+    backoff_sleep: impl Fn(Duration),
+    cycle: impl Fn(),
+) {
+    while !stop.load(Ordering::Relaxed) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(&cycle)) {
+            Ok(()) => {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                warn!("kafka consumer cycle finished unexpectedly, restarting");
+                backoff_sleep(cycle_backoff);
+            }
+            Err(payload) => {
+                let reason = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "(unknown panic payload)".to_owned());
+                error!(panic = %reason, "kafka consumer cycle panicked, restarting");
+                backoff_sleep(cycle_backoff);
+            }
+        }
+    }
+}
+
+/// Runs one consumer cycle: create the consumer, assign the topic's partitions
+/// and poll until `stop` is set. Setup failures panic on purpose — [`supervise`]
+/// catches the panic and starts a fresh cycle after the backoff. Sets `ready`
+/// once the initial read of the topic has been applied, but never resets it, so
+/// a restart cannot make an already-serving service unready again.
+fn run_cycle(
+    store: &Arc<CredentialStore>,
+    brokers: &str,
+    topic: &str,
+    ready: &Arc<AtomicBool>,
+    stop: &Arc<AtomicBool>,
+    metrics: &Arc<Metrics>,
+) {
+    // librdkafka requires a consumer group for any partition assignment,
+    // but none of the group's stateful features are used here, so the id
+    // is an ephemeral per-cycle name (see `ephemeral_group_id`).
+    let group_id = ephemeral_group_id();
+    let consumer: BaseConsumer = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .set("group.id", group_id.as_str())
+        .create()
+        .expect("create kafka consumer");
+    assign_partitions(&consumer, topic, stop, metrics);
+    let mut last_offsets: HashMap<i32, i64> = HashMap::new();
+    while !stop.load(Ordering::Relaxed) {
+        match consumer.poll(Duration::from_millis(100)) {
+            Some(Ok(message)) => {
+                metrics.record_kafka_message();
+                last_offsets.insert(message.partition(), message.offset());
+                let Some(key) = message.key() else {
+                    warn!("skipping message without key");
+                    continue;
+                };
+                let Ok(station_id) = std::str::from_utf8(key) else {
+                    warn!("skipping message with non-UTF-8 key");
+                    continue;
+                };
+                apply_message(store, station_id, message.payload());
+            }
+            Some(Err(e)) => {
+                metrics.record_kafka_error();
+                error!(error = %e, "kafka poll failed");
+            }
+            None => {
+                if !ready.load(Ordering::Relaxed) && caught_up(&consumer, topic, &last_offsets) {
+                    ready.store(true, Ordering::Relaxed);
+                    tracing::info!(topic, "initial topic read complete");
+                }
+            }
+        }
+    }
+}
+
+/// Ephemeral per-cycle group id: process pid plus a sub-second nonce, so
+/// concurrent instances or successive cycles never share a group. The group exists
 /// only to satisfy librdkafka's assignment protocol; no offsets are ever
 /// stored or committed under this name.
 fn ephemeral_group_id() -> String {
@@ -237,6 +297,7 @@ fn caught_up(consumer: &BaseConsumer, topic: &str, last_offsets: &HashMap<i32, i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     fn given_store() -> CredentialStore {
         CredentialStore::new()
@@ -351,5 +412,64 @@ mod tests {
         apply_message(&store, "AL1000", None);
 
         assert!(!store.verify("AL1000", "AL1000", password));
+    }
+
+    #[test]
+    fn should_restart_the_cycle_after_a_panic() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counting = Arc::clone(&calls);
+        let cycle_stop = Arc::clone(&stop);
+
+        supervise(
+            &stop,
+            Duration::ZERO,
+            |_| {},
+            move || {
+                // The panic message ends up in the error log only.
+                if counting.fetch_add(1, Ordering::Relaxed) < 2 {
+                    panic!("simulated cycle failure");
+                }
+                cycle_stop.store(true, Ordering::Relaxed);
+            },
+        );
+
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+        assert!(stop.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn should_stop_supervising_when_stop_is_already_set() {
+        let stop = AtomicBool::new(true);
+        let calls = AtomicUsize::new(0);
+
+        supervise(
+            &stop,
+            Duration::ZERO,
+            |_| {},
+            || {
+                calls.fetch_add(1, Ordering::Relaxed);
+            },
+        );
+
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn should_not_restart_a_cleanly_finished_cycle_while_stopped() {
+        let stop = AtomicBool::new(false);
+        let calls = AtomicUsize::new(0);
+
+        supervise(
+            &stop,
+            Duration::ZERO,
+            |_| {},
+            || {
+                calls.fetch_add(1, Ordering::Relaxed);
+                stop.store(true, Ordering::Relaxed);
+            },
+        );
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }
