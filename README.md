@@ -141,8 +141,11 @@ instead of queueing.
 | --- | --- |
 | `ocpp_auth_requests_total{result="success\|failure\|rate_limited"}` | Auth decisions by outcome. |
 | `ocpp_auth_known_stations` | Stations currently present in the credential store. |
+| `ocpp_auth_verify_duration_seconds` | Histogram of the bcrypt time per credential verification. |
+| `ocpp_auth_bcrypt_permits_available` | Free bcrypt permits; near zero means the bcrypt pool is saturated. |
 | `ocpp_auth_kafka_last_message_timestamp_seconds` | Unix seconds of the last consumed Kafka message; only advances when messages arrive. |
 | `ocpp_auth_kafka_errors_total` | Kafka poll errors. |
+| `ocpp_auth_kafka_consumer_up` | 1 while a kafka consumer cycle is running, 0 otherwise. |
 
 ## Security notes
 

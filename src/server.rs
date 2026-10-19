@@ -58,7 +58,9 @@ async fn readyz(State(state): State<Arc<AppState>>) -> StatusCode {
 }
 
 async fn metrics(State(state): State<Arc<AppState>>) -> Response {
-    let body = state.metrics.render(state.store.len());
+    let body = state
+        .metrics
+        .render(state.store.len(), state.bcrypt_permits.available_permits());
     (
         [(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
         body,
@@ -108,9 +110,14 @@ async fn auth(State(state): State<Arc<AppState>>, request: Request) -> Response 
         return rate_limited(&state);
     };
     let store = state.store.clone();
+    let metrics = state.metrics.clone();
     let verified = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        store.verify(&station_id, &username, &password)
+        // Measure only the verification itself, not the wait for the permit.
+        let start = std::time::Instant::now();
+        let verified = store.verify(&station_id, &username, &password);
+        metrics.observe_verify(start.elapsed().as_secs_f64());
+        verified
     })
     .await
     .unwrap_or(false);
@@ -482,6 +489,10 @@ mod tests {
         assert!(body.contains("ocpp_auth_known_stations"));
         assert!(body.contains("ocpp_auth_kafka_last_message_timestamp_seconds 0"));
         assert!(body.contains("ocpp_auth_kafka_errors_total 0"));
+        // given_state starts with 8 free permits and no request has run yet,
+        // so the gauge shows the full pool and the histogram exists at count 0.
+        assert!(body.contains("ocpp_auth_bcrypt_permits_available 8"));
+        assert!(body.contains("ocpp_auth_verify_duration_seconds_count"));
     }
 
     #[tokio::test]

@@ -1,11 +1,17 @@
-use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Opts, Registry, TextEncoder};
+use prometheus::{
+    Encoder, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
+    TextEncoder,
+};
 
 pub struct Metrics {
     registry: Registry,
     requests_total: IntCounterVec,
     known_stations: IntGauge,
+    verify_duration_seconds: Histogram,
+    bcrypt_permits_available: IntGauge,
     kafka_last_message_timestamp_seconds: IntGauge,
     kafka_errors_total: IntCounter,
+    kafka_consumer_up: IntGauge,
 }
 
 impl Default for Metrics {
@@ -48,12 +54,44 @@ impl Default for Metrics {
         registry
             .register(Box::new(kafka_errors_total.clone()))
             .expect("register ocpp_auth_kafka_errors counter");
+        // f64 histogram (not IntHistogram, whose observe only takes integers) so
+        // durations can be observed directly in seconds.
+        let verify_duration_seconds = Histogram::with_opts(
+            HistogramOpts::new(
+                "ocpp_auth_verify_duration_seconds",
+                "Duration of one credential verification in seconds.",
+            )
+            .buckets(vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]),
+        )
+        .expect("create ocpp_auth_verify_duration histogram");
+        registry
+            .register(Box::new(verify_duration_seconds.clone()))
+            .expect("register ocpp_auth_verify_duration histogram");
+        let bcrypt_permits_available = IntGauge::new(
+            "ocpp_auth_bcrypt_permits_available",
+            "Number of bcrypt permits currently free; near zero means the bcrypt pool is saturated.",
+        )
+        .expect("create ocpp_auth_bcrypt_permits_available gauge");
+        registry
+            .register(Box::new(bcrypt_permits_available.clone()))
+            .expect("register ocpp_auth_bcrypt_permits_available gauge");
+        let kafka_consumer_up = IntGauge::new(
+            "ocpp_auth_kafka_consumer_up",
+            "1 while a kafka consumer cycle is running, 0 otherwise.",
+        )
+        .expect("create ocpp_auth_kafka_consumer_up gauge");
+        registry
+            .register(Box::new(kafka_consumer_up.clone()))
+            .expect("register ocpp_auth_kafka_consumer_up gauge");
         let metrics = Self {
             registry,
             requests_total,
             known_stations,
+            verify_duration_seconds,
+            bcrypt_permits_available,
             kafka_last_message_timestamp_seconds,
             kafka_errors_total,
+            kafka_consumer_up,
         };
         let _ = metrics.requests_total.with_label_values(&["success"]);
         let _ = metrics.requests_total.with_label_values(&["failure"]);
@@ -90,8 +128,18 @@ impl Metrics {
         self.kafka_errors_total.inc();
     }
 
-    pub fn render(&self, known_stations: usize) -> String {
+    pub fn observe_verify(&self, seconds: f64) {
+        self.verify_duration_seconds.observe(seconds);
+    }
+
+    pub fn set_kafka_consumer_up(&self, up: bool) {
+        self.kafka_consumer_up.set(if up { 1 } else { 0 });
+    }
+
+    pub fn render(&self, known_stations: usize, bcrypt_permits_available: usize) -> String {
         self.known_stations.set(known_stations as i64);
+        self.bcrypt_permits_available
+            .set(bcrypt_permits_available as i64);
         let mut buffer = Vec::new();
         TextEncoder::new()
             .encode(&self.registry.gather(), &mut buffer)
@@ -106,7 +154,7 @@ mod tests {
 
     fn given_rendered_value(metrics: &Metrics, name: &str) -> i64 {
         metrics
-            .render(0)
+            .render(0, 0)
             .lines()
             .find_map(|line| {
                 line.strip_prefix(&format!("{name} "))
@@ -154,6 +202,51 @@ mod tests {
         assert_eq!(
             given_rendered_value(&metrics, "ocpp_auth_kafka_errors_total"),
             2
+        );
+    }
+
+    #[test]
+    fn should_render_new_metric_names() {
+        let metrics = Metrics::new();
+
+        let rendered = metrics.render(0, 0);
+        // A histogram renders as _count/_sum/_bucket families, never as a
+        // bare name, so match the count series.
+        assert!(rendered.contains("ocpp_auth_verify_duration_seconds_count"));
+        assert!(rendered.contains("ocpp_auth_bcrypt_permits_available"));
+        assert!(rendered.contains("ocpp_auth_kafka_consumer_up"));
+    }
+
+    #[test]
+    fn should_report_bcrypt_permits_available_from_render_argument() {
+        let metrics = Metrics::new();
+
+        assert!(
+            metrics
+                .render(0, 8)
+                .contains("ocpp_auth_bcrypt_permits_available 8")
+        );
+    }
+
+    #[test]
+    fn should_set_kafka_consumer_up_flag() {
+        let metrics = Metrics::new();
+
+        assert_eq!(
+            given_rendered_value(&metrics, "ocpp_auth_kafka_consumer_up"),
+            0
+        );
+
+        metrics.set_kafka_consumer_up(true);
+        assert_eq!(
+            given_rendered_value(&metrics, "ocpp_auth_kafka_consumer_up"),
+            1
+        );
+
+        metrics.set_kafka_consumer_up(false);
+        assert_eq!(
+            given_rendered_value(&metrics, "ocpp_auth_kafka_consumer_up"),
+            0
         );
     }
 }

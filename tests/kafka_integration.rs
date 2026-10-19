@@ -65,7 +65,7 @@ fn wait_until(timeout: Duration, description: &str, mut condition: impl FnMut() 
 
 fn rendered_value(metrics: &Metrics, name: &str) -> i64 {
     metrics
-        .render(0)
+        .render(0, 0)
         .lines()
         .find_map(|line| {
             line.strip_prefix(&format!("{name} "))

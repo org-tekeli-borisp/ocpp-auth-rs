@@ -167,6 +167,19 @@ fn supervise(
     }
 }
 
+/// Marks the consumer-up gauge for the lifetime of one cycle. [`Drop`] clears
+/// it on any exit path, including a panic caught by [`supervise`], so the gauge
+/// is 1 only while a cycle is actually running.
+struct ConsumerUpGuard<'a> {
+    metrics: &'a Metrics,
+}
+
+impl Drop for ConsumerUpGuard<'_> {
+    fn drop(&mut self) {
+        self.metrics.set_kafka_consumer_up(false);
+    }
+}
+
 /// Runs one consumer cycle: create the consumer, assign the topic's partitions
 /// and poll until `stop` is set. Setup failures panic on purpose — [`supervise`]
 /// catches the panic and starts a fresh cycle after the backoff. Sets `ready`
@@ -180,6 +193,8 @@ fn run_cycle(
     stop: &Arc<AtomicBool>,
     metrics: &Arc<Metrics>,
 ) {
+    let _consumer_up = ConsumerUpGuard { metrics };
+    metrics.set_kafka_consumer_up(true);
     // librdkafka requires a consumer group for any partition assignment,
     // but none of the group's stateful features are used here, so the id
     // is an ephemeral per-cycle name (see `ephemeral_group_id`).
@@ -471,5 +486,25 @@ mod tests {
         );
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn should_clear_consumer_up_gauge_when_the_cycle_panics() {
+        let metrics = Metrics::new();
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ConsumerUpGuard { metrics: &metrics };
+            metrics.set_kafka_consumer_up(true);
+            // The panic message ends up in the error log only.
+            panic!("simulated cycle failure");
+        }));
+
+        assert!(outcome.is_err());
+        assert!(
+            metrics
+                .render(0, 0)
+                .contains("ocpp_auth_kafka_consumer_up 0"),
+            "the drop guard should clear the gauge on the panic unwinding path"
+        );
     }
 }
