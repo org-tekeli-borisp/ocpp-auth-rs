@@ -113,6 +113,9 @@ compose down -v --remove-orphans >/dev/null 2>&1 || true
 echo "==> Building Docker image ${IMAGE}"
 docker build -t "$IMAGE" .
 
+echo "==> Building mock backend image"
+compose build mock-backend
+
 echo "==> Starting stack with high rate limits"
 compose up -d
 

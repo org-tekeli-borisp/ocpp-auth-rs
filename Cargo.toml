@@ -21,3 +21,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 testcontainers = { version = "0.27", features = ["blocking"] }
 testcontainers-modules = { version = "0.15", features = ["kafka"] }
 tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

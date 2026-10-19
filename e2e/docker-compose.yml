@@ -43,9 +43,9 @@ services:
         condition: service_healthy
 
   mock-backend:
-    image: ocpp-auth-rs:e2e
+    build: ./mock-backend
+    image: ocpp-auth-rs-mock:e2e
     container_name: ocpp-e2e-mock-backend
-    entrypoint: ["mock_backend"]
 
   traefik:
     image: traefik:v3.6

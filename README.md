@@ -177,7 +177,8 @@ suite, and `cargo audit`.
 **E2E:** `bash e2e/run_e2e.sh` builds the image and brings up the full
 docker-compose stack (Kafka, Traefik, a mock backend, this service), produces a
 keyed credential message, and asserts 200/401 behaviour through Traefik, the
-`WWW-Authenticate` header, and clean exit on SIGTERM.
+`WWW-Authenticate` header, and clean exit on SIGTERM. The mock backend ships
+as its own small image, built from `e2e/mock-backend/`.
 
 **Load test (manual, not in CI):** `bash e2e/run_loadtest.sh` runs k6 against
 the same stack through Traefik, measuring the accept path (correct password)
@@ -196,7 +197,9 @@ not a target.
 ## Deployment
 
 The `Dockerfile` is multi-stage (`rust:1.98` builder → `debian:trixie-slim`)
-and exposes 8080 (auth) and 8081 (admin). Minimum runtime environment:
+and exposes 8080 (auth) and 8081 (admin). The image contains only the
+`ocpp-auth-rs` service binary and runs as the non-root `ocpp` user. Minimum
+runtime environment:
 
 ```sh
 KAFKA_BROKERS=kafka:9092 OCPP_AUTH_TOPIC=ocpp-auth-stations ./ocpp-auth-rs

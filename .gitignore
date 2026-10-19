@@ -1,4 +1,5 @@
 /target
 /e2e/bcrypt-hash/target
+/e2e/mock-backend/target
 /.idea/
 /ocpp-auth-rs.iml
