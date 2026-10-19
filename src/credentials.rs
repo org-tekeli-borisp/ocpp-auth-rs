@@ -70,14 +70,24 @@ impl CredentialStore {
     /// real bcrypt verification; every rejection path runs a bcrypt
     /// verification against the dummy hash instead, so that all outcomes
     /// take approximately the same time.
+    ///
+    /// The store lock is only held long enough to clone the stored hash: the
+    /// expensive bcrypt verification runs without it so that concurrent
+    /// verifications and Kafka upserts are never serialised behind the hash.
     pub fn verify(&self, station_id: &str, username: &str, password: &[u8]) -> bool {
         if username != station_id {
             return self.dummy_verify(password);
         }
-        let guard = self.stations.lock().unwrap();
-        match guard.get(station_id) {
-            Some(AuthType::Basic { password_hash }) => {
-                match bcrypt::verify(password, password_hash) {
+        let stored_hash = {
+            let guard = self.stations.lock().unwrap();
+            match guard.get(station_id) {
+                Some(AuthType::Basic { password_hash }) => Some(password_hash.clone()),
+                _ => None,
+            }
+        };
+        match stored_hash {
+            Some(password_hash) => {
+                match bcrypt::verify(password, &password_hash) {
                     Ok(matched) => matched,
                     // A malformed stored hash would answer in microseconds;
                     // burn a real verification's time instead.
@@ -191,5 +201,46 @@ mod tests {
         let result = store.verify("AL1000", "AL1000", &given_password());
 
         assert!(!result);
+    }
+
+    #[test]
+    fn should_not_hold_store_lock_during_bcrypt_verification() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        // A wrong password keeps bcrypt busy for roughly the full verification
+        // time (~60 ms at cost 10) while the station lookup holds the store
+        // lock. While that runs, the probe window below must still get hold of
+        // the lock, otherwise a concurrent Kafka upsert would block behind
+        // every bcrypt run. The username must match the station id so the
+        // lookup is reached: a mismatched username rejects before locking.
+        let given_store = Arc::new(given_basic_store());
+        let verifying_store = Arc::clone(&given_store);
+        let verifying = thread::spawn(move || {
+            verifying_store.verify("AL1000", "AL1000", &(20..40).collect::<Vec<u8>>())
+        });
+
+        // Head start so the worker is inside bcrypt when probing begins; the
+        // probe only ever runs on this thread, so it cannot race itself.
+        thread::sleep(Duration::from_millis(5));
+        let deadline = Instant::now() + Duration::from_millis(40);
+        let mut lock_was_free = false;
+        while Instant::now() < deadline {
+            if given_store.stations.try_lock().is_ok() {
+                lock_was_free = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let result = verifying.join().expect("verifying thread must not panic");
+
+        assert!(!result, "a wrong password must be rejected");
+        assert!(
+            lock_was_free,
+            "the store lock stayed busy for the whole probe window while \
+             verify() was running, so it is still held across bcrypt"
+        );
     }
 }
