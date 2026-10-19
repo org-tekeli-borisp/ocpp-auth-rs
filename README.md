@@ -53,8 +53,8 @@ startup; invalid configuration aborts with an error.
 | --- | --- | --- |
 | `KAFKA_BROKERS` | — | Comma-separated bootstrap servers. Required, non-empty. |
 | `OCPP_AUTH_TOPIC` | — | Compacted topic carrying credential updates. Required, non-empty. |
-| `PORT` | `8080` | Forward-auth listen port; must be a valid port number. |
-| `ADMIN_PORT` | `8081` | Health/metrics listen port; must be a valid port number. |
+| `PORT` | `8080` | Forward-auth listen port; must be a valid port number, different from `ADMIN_PORT`. |
+| `ADMIN_PORT` | `8081` | Health/metrics listen port; must be a valid port number, different from `PORT`. |
 | `RATE_LIMIT_PER_SECOND` | `2.0` | Auth token refill per second per station; non-negative finite number. |
 | `RATE_LIMIT_BURST` | `10.0` | Auth token bucket capacity per station; at least `1.0` (below that every request would be rejected). |
 | `RATE_LIMIT_IP_PER_SECOND` | `20.0` | Auth token refill per second per client IP; non-negative finite number. |

@@ -4,6 +4,7 @@
 //!
 //! - `PORT`: port the forward-auth endpoint listens on (default `8080`).
 //! - `ADMIN_PORT`: port the health and metrics endpoints listen on (default `8081`).
+//!   `PORT` and `ADMIN_PORT` must be different.
 //! - `KAFKA_BROKERS`: comma-separated Kafka bootstrap servers (required, non-empty).
 //! - `OCPP_AUTH_TOPIC`: Kafka topic carrying credential updates (required, non-empty).
 //! - `RATE_LIMIT_PER_SECOND`: auth tokens refilled per second per station (default `2.0`).
@@ -93,6 +94,12 @@ impl Config {
             }
         };
 
+        let auth_port = port("PORT", DEFAULT_PORT)?;
+        let admin_port = port("ADMIN_PORT", DEFAULT_ADMIN_PORT)?;
+        if auth_port == admin_port {
+            return Err("PORT and ADMIN_PORT must be different".to_string());
+        }
+
         let rate_limit_burst = rate("RATE_LIMIT_BURST", DEFAULT_RATE_LIMIT_BURST)?;
         if rate_limit_burst < 1.0 {
             return Err("RATE_LIMIT_BURST must be at least 1.0".to_string());
@@ -103,8 +110,8 @@ impl Config {
         }
 
         Ok(Config {
-            port: port("PORT", DEFAULT_PORT)?,
-            admin_port: port("ADMIN_PORT", DEFAULT_ADMIN_PORT)?,
+            port: auth_port,
+            admin_port,
             kafka_brokers: required("KAFKA_BROKERS")?,
             kafka_topic: required("OCPP_AUTH_TOPIC")?,
             rate_limit_per_second: rate("RATE_LIMIT_PER_SECOND", DEFAULT_RATE_LIMIT_PER_SECOND)?,
@@ -214,6 +221,19 @@ mod tests {
         let error = given_config(&env).unwrap_err();
 
         assert!(error.contains("PORT"), "{error}");
+    }
+
+    #[test]
+    fn should_error_when_port_and_admin_port_are_equal() {
+        let mut env = given_required_env();
+        env.extend(given_env(&[("PORT", "9090"), ("ADMIN_PORT", "9090")]));
+
+        let error = given_config(&env).unwrap_err();
+
+        assert!(
+            error.contains("PORT and ADMIN_PORT must be different"),
+            "{error}"
+        );
     }
 
     #[test]
