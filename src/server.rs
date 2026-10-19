@@ -100,8 +100,10 @@ async fn auth(State(state): State<Arc<AppState>>, request: Request) -> Response 
     let Some((username, password)) = crate::basic_auth::parse(authorization) else {
         return unauthorized(&state);
     };
-    let Ok(permit) = state.bcrypt_permits.clone().acquire_owned().await else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    // Fail fast when every bcrypt permit is busy instead of queueing the
+    // request: Traefik and stations retry after Retry-After, p95 stays predictable.
+    let Ok(permit) = state.bcrypt_permits.clone().try_acquire_owned() else {
+        return rate_limited(&state);
     };
     let store = state.store.clone();
     let verified = tokio::task::spawn_blocking(move || {
@@ -321,6 +323,46 @@ mod tests {
                 .get(RETRY_AFTER)
                 .and_then(|value| value.to_str().ok())
         );
+    }
+
+    #[tokio::test]
+    async fn auth_should_return_rate_limited_when_all_bcrypt_permits_are_busy() {
+        let state = Arc::new(AppState {
+            store: given_store(),
+            metrics: Arc::new(Metrics::new()),
+            ready: Arc::new(AtomicBool::new(true)),
+            rate_limiter: Arc::new(RateLimiter::new(0.0, 1000.0)),
+            ip_rate_limiter: Arc::new(RateLimiter::new(0.0, 1000.0)),
+            bcrypt_permits: Arc::new(Semaphore::new(1)),
+        });
+        let held_permit = state
+            .bcrypt_permits
+            .clone()
+            .try_acquire_owned()
+            .expect("the only permit is free before the request");
+
+        let response = get_response_with(
+            state.clone(),
+            "/ocpp/AL1000",
+            Some(VALID_AUTHORIZATION),
+            None,
+        )
+        .await;
+
+        assert_eq!(StatusCode::TOO_MANY_REQUESTS, response.status());
+        assert_eq!(
+            Some("1"),
+            response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+        );
+
+        drop(held_permit);
+        let response =
+            get_response_with(state, "/ocpp/AL1000", Some(VALID_AUTHORIZATION), None).await;
+
+        assert_ok(&response);
     }
 
     #[tokio::test]

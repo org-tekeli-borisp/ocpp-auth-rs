@@ -38,7 +38,7 @@ Kafka (compacted topic) ──> consumer thread ──> in-memory credential sto
 
 | Port | Env var (default) | Route | Purpose |
 | --- | --- | --- | --- |
-| Auth | `PORT` (8080) | any request | Forward-auth check; fallback handler for the whole router. `200` allow, `401` deny, `429` rate-limited (`Retry-After: 1`). |
+| Auth | `PORT` (8080) | any request | Forward-auth check; fallback handler for the whole router. `200` allow, `401` deny, `429` rate-limited (`Retry-After: 1`) — also when every bcrypt permit is busy (fail fast instead of queueing). |
 | Admin | `ADMIN_PORT` (8081) | `GET /healthz` | Liveness; `200` whenever the process is up. |
 | Admin | | `GET /readyz` | Readiness; `200` once the initial read of the Kafka topic has been applied, `503` before. |
 | Admin | | `GET /metrics` | Prometheus text-format metrics. |
@@ -126,7 +126,9 @@ client IP (default 20/s, burst 50), keyed by the first entry of
 `X-Forwarded-For`; requests without that header (direct dev calls) skip the IP
 check. Exceeding either bucket returns `429` with `Retry-After: 1`. Buckets are
 capped at 10 000 keys; idle-full buckets are evicted, and if every key is
-active the limiter fails open (the bcrypt semaphore still bounds CPU).
+active the limiter fails open (the bcrypt semaphore still bounds CPU). When
+every bcrypt permit is busy, new requests are rejected immediately with `429`
+instead of queueing.
 
 ## Metrics
 
