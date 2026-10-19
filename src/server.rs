@@ -29,8 +29,10 @@ pub struct AppState {
 }
 
 /// Public router: every request on the auth port is a forward-auth check.
+/// The fallback runs for any method so the answer is always an auth decision
+/// (200/401/429) rather than a method-based 405 from the router itself.
 pub fn app(state: Arc<AppState>) -> Router {
-    Router::new().fallback(get(auth)).with_state(state)
+    Router::new().fallback(auth).with_state(state)
 }
 
 /// Internal router: operational endpoints, served on a separate admin port so
@@ -381,6 +383,20 @@ mod tests {
 
         let response =
             get_response_with(state, "/ocpp/AL1000", Some(VALID_AUTHORIZATION), None).await;
+
+        assert_ok(&response);
+    }
+
+    #[tokio::test]
+    async fn auth_should_answer_with_a_decision_for_any_method() {
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/ocpp/AL1000")
+            .header("Authorization", VALID_AUTHORIZATION)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app(given_state()).oneshot(request).await.unwrap();
 
         assert_ok(&response);
     }
