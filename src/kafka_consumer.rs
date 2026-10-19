@@ -11,7 +11,7 @@ use rdkafka::{Offset, TopicPartitionList};
 use serde::Deserialize;
 use tracing::{error, warn};
 
-use crate::credentials::{AuthType, CredentialStore};
+use crate::credentials::{AuthType, BCRYPT_COST, CredentialStore};
 use crate::metrics::Metrics;
 
 #[derive(Deserialize)]
@@ -21,34 +21,31 @@ struct StationCredentials {
     password: Option<String>,
 }
 
-/// Upper bound on the bcrypt cost factor accepted at ingestion. Verification
-/// time doubles with every increment, so a faulty or compromised producer
-/// publishing e.g. cost 31 would block a verification thread for minutes.
-const MAX_BCRYPT_COST: u32 = 15;
-
-/// True if `hash` is a syntactically valid bcrypt hash
-/// (`$2$`/`$2a$`/`$2b$`/`$2y$` + two-digit cost + `$` + 53 salt+hash chars
-/// from the bcrypt base64 alphabet) with a cost of at most
-/// [`MAX_BCRYPT_COST`].
-fn is_valid_bcrypt_hash(hash: &str) -> bool {
-    let Some(rest) = ["$2$", "$2a$", "$2b$", "$2y$"]
+/// The bcrypt cost factor encoded in `hash`, or `None` if `hash` is not a
+/// syntactically valid bcrypt hash (`$2$`/`$2a$`/`$2b$`/`$2y$` + two-digit
+/// cost + `$` + 53 salt+hash chars from the bcrypt base64 alphabet).
+fn bcrypt_hash_cost(hash: &str) -> Option<u32> {
+    let rest = ["$2$", "$2a$", "$2b$", "$2y$"]
         .into_iter()
-        .find_map(|prefix| hash.strip_prefix(prefix))
-    else {
-        return false;
-    };
-    let Some((cost, salt_and_hash)) = rest.split_once('$') else {
-        return false;
-    };
-    cost.len() == 2
+        .find_map(|prefix| hash.strip_prefix(prefix))?;
+    let (cost, salt_and_hash) = rest.split_once('$')?;
+    let valid = cost.len() == 2
         && cost.bytes().all(|byte| byte.is_ascii_digit())
-        && cost
-            .parse::<u32>()
-            .is_ok_and(|cost| cost <= MAX_BCRYPT_COST)
         && salt_and_hash.len() == 53
         && salt_and_hash
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'/')
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'/');
+    valid.then(|| cost.parse::<u32>().ok()).flatten()
+}
+
+/// True if `hash` is a syntactically valid bcrypt hash with exactly the
+/// accepted cost [`BCRYPT_COST`]. Only this single cost is accepted so that
+/// every stored credential verifies in the same time as the dummy hash used
+/// to equalise the rejection paths; otherwise a known station stored at a
+/// higher cost would answer measurably slower than an unknown one, and a
+/// lower cost would needlessly weaken the stored credential.
+fn is_valid_bcrypt_hash(hash: &str) -> bool {
+    bcrypt_hash_cost(hash).is_some_and(|cost| cost == BCRYPT_COST)
 }
 
 pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[u8]>) {
@@ -67,11 +64,19 @@ pub fn apply_message(store: &CredentialStore, station_id: &str, value: Option<&[
             Some(password_hash) if is_valid_bcrypt_hash(&password_hash) => {
                 AuthType::Basic { password_hash }
             }
-            Some(_) => {
-                warn!(
-                    station_id,
-                    "skipping BASIC message with invalid password hash"
-                );
+            Some(password_hash) => {
+                match bcrypt_hash_cost(&password_hash) {
+                    Some(cost) => warn!(
+                        station_id,
+                        cost, "skipping BASIC message with bcrypt cost other than {BCRYPT_COST}"
+                    ),
+                    None => {
+                        warn!(
+                            station_id,
+                            "skipping BASIC message with invalid password hash"
+                        );
+                    }
+                }
                 return;
             }
             None => {
@@ -284,9 +289,20 @@ mod tests {
     }
 
     #[test]
-    fn should_skip_basic_with_password_hash_above_max_cost() {
+    fn should_skip_basic_with_password_hash_above_accepted_cost() {
         let store = given_store();
-        let password_hash = format!("$2b${:02}{}", MAX_BCRYPT_COST + 1, "C".repeat(53));
+        let password_hash = format!("$2b${:02}{}", BCRYPT_COST + 2, "C".repeat(53));
+        let value = given_basic_value(&password_hash);
+
+        apply_message(&store, "AL1000", Some(value.as_bytes()));
+
+        assert!(!store.contains("AL1000"));
+    }
+
+    #[test]
+    fn should_skip_basic_with_password_hash_below_accepted_cost() {
+        let store = given_store();
+        let password_hash = format!("$2b${:02}{}", BCRYPT_COST - 6, "C".repeat(53));
         let value = given_basic_value(&password_hash);
 
         apply_message(&store, "AL1000", Some(value.as_bytes()));

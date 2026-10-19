@@ -81,13 +81,16 @@ is JSON:
 - A **tombstone** (null value) removes the station; subsequent requests for it
   are rejected as unknown.
 - `password` must be a syntactically valid bcrypt hash
-  (`$2$`/`$2a$`/`$2b$`/`$2y$`, two-digit cost, 53 salt+hash characters) with a
-  **cost factor of at most 15** (`MAX_BCRYPT_COST`). Verification time doubles
-  per increment, so an unbounded cost from a faulty or compromised producer
-  could block a verification thread for minutes.
+  (`$2$`/`$2a$`/`$2b$`/`$2y$`, two-digit cost, 53 salt+hash characters) with
+  **exactly bcrypt cost 10** (`BCRYPT_COST`). This bounds the verification
+  time and keeps every stored hash at the dummy hash's cost, so all
+  verifications stay timing-indistinguishable and the dummy-based rejection
+  equalisation actually holds; lower costs would store needlessly weak
+  credentials.
 - Invalid messages — bad JSON, unknown `authenticationType`, `BASIC` without a
-  password or with an invalid/too-expensive hash, missing or non-UTF-8 key —
-  are skipped with a warning; the previous store entry is left untouched.
+  password or with an invalid hash or a hash at any other cost, missing or
+  non-UTF-8 key — are skipped with a warning; the previous store entry is left
+  untouched.
 - Readiness flips once every assigned partition has been consumed to its high
   watermark. A topic that is not visible in the cluster yet keeps the service
   unready; an **empty** topic becomes ready immediately.
@@ -134,8 +137,10 @@ active the limiter fails open (the bcrypt semaphore still bounds CPU).
 
 ## Security notes
 
-- bcrypt cost is capped at 15 at ingestion, so no stored credential can make a
-  verification arbitrarily expensive.
+- bcrypt ingestion accepts only cost 10 (`BCRYPT_COST`), so no stored
+  credential can make a verification arbitrarily expensive and every stored
+  hash verifies in the same time as the dummy hash, keeping the timing
+  equalisation below intact.
 - Concurrent bcrypt work is bounded by `BCRYPT_CONCURRENCY`.
 - Per-station and per-IP rate limits: one host cannot burn a known station's
   bucket to lock out its reconnects, and spraying random station ids exhausts

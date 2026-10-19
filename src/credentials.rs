@@ -7,10 +7,12 @@ pub enum AuthType {
     Basic { password_hash: String },
 }
 
-/// Bcrypt cost factor for the dummy hash. Matches the cost used for real
-/// station hashes so a dummy verification takes approximately the same time
-/// as a genuine one.
-const DUMMY_BCRYPT_COST: u32 = 10;
+/// The one bcrypt cost factor accepted for stored password hashes. The dummy
+/// hash below and the Kafka ingestion validation share this constant, so the
+/// dummy verification and every genuine verification take the same time and
+/// the timing equalisation cannot be defeated by a stored hash at a different
+/// cost.
+pub const BCRYPT_COST: u32 = 10;
 
 /// Throwaway password for the dummy hash. The value is irrelevant: the dummy
 /// verification result is never returned, and `bcrypt::hash` draws a fresh
@@ -35,7 +37,7 @@ impl Default for CredentialStore {
 
 impl CredentialStore {
     pub fn new() -> Self {
-        let dummy_hash = bcrypt::hash(DUMMY_PASSWORD, DUMMY_BCRYPT_COST)
+        let dummy_hash = bcrypt::hash(DUMMY_PASSWORD, BCRYPT_COST)
             .expect("hashing the dummy password should never fail");
         Self {
             stations: Mutex::new(HashMap::new()),
