@@ -25,7 +25,9 @@ Kafka (compacted topic) ──> consumer thread ──> in-memory credential sto
   `WWW-Authenticate: Basic realm="ocpp"`) makes Traefik reject it.
 - The station id is taken from the request path `/ocpp/{stationId}`, or, when
   present, from the `X-Forwarded-Uri` header Traefik adds (query string is
-  stripped). Anything that is not a two-segment `/ocpp/{id}` path is rejected.
+  stripped). The id segment is percent-decoded; ids that do not decode to valid
+  UTF-8 are rejected. Anything that is not a two-segment `/ocpp/{id}` path is
+  rejected.
 - The `Authorization: Basic` username must equal the station id from the path;
   the password is verified against the stored bcrypt hash.
 - Verifications run on blocking threads and are bounded by a semaphore
