@@ -14,19 +14,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
 
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   e2e:
     runs-on: ubuntu-latest
@@ -40,7 +42,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      - name: Install cargo-audit (pinned prebuilt binary)
+        env:
+          # Pinned release version; bump manually (check the changelog on
+          # https://github.com/rustsec/rustsec/releases). RustSec/cargo-audit
+          # redirects to the rustsec/rustsec monorepo, which hosts the assets.
+          CARGO_AUDIT_VERSION: "0.22.2"
+        run: |
+          curl -fsSL -o /tmp/cargo-audit.tgz \
+            "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v${CARGO_AUDIT_VERSION}/cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}.tgz"
+          tar -xzf /tmp/cargo-audit.tgz -C /tmp
+          install -m 0755 \
+            "/tmp/cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}/cargo-audit" \
+            /usr/local/bin/cargo-audit
+          cargo-audit --version
       - name: Run cargo audit
         run: cargo audit

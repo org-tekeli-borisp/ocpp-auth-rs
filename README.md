@@ -172,7 +172,10 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 CI (`.github/workflows/rust.yml`) runs build + tests, fmt/clippy, the E2E
-suite, and `cargo audit`.
+suite, and `cargo audit`. The toolchain is pinned via `rust-toolchain.toml`
+(1.98, matching the `rust:1.98` Docker builder), and Dependabot
+(`.github/dependabot.yml`) keeps Cargo dependencies, GitHub Actions, and the
+Dockerfiles up to date.
 
 **E2E:** `bash e2e/run_e2e.sh` builds the image and brings up the full
 docker-compose stack (Kafka, Traefik, a mock backend, this service), produces a

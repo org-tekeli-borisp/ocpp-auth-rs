@@ -1,0 +1,5 @@
+# Pins the Rust toolchain used locally and in CI. Kept in sync with the
+# Docker base image (rust:1.98) used by the Dockerfiles — update both together.
+[toolchain]
+channel = "1.98"
+components = ["rustfmt", "clippy"]
